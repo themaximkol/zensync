@@ -78,6 +78,106 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# push command
+# ---------------------------------------------------------------------------
+
+def _cmd_push(args: argparse.Namespace) -> int:
+    import tempfile
+    from zensync.config import load as load_config
+    from zensync.payload import pack
+    from zensync.profile import ProfileNotFoundError, discover
+    from zensync.state import State
+
+    cfg = load_config()
+    profile_path = Path(args.profile) if args.profile else (
+        Path(cfg.profile_path) if cfg.profile_path else None
+    )
+
+    try:
+        profile = discover(profile_path=profile_path)
+    except ProfileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    state = State.load()
+    device_id = state.device_id
+
+    with tempfile.TemporaryDirectory(prefix="zensync-push-") as tmpdir:
+        try:
+            tarball, manifest = pack(
+                profile=profile,
+                staging_dir=Path(tmpdir),
+                device_id=device_id,
+                kind="hard",
+                parent_id=state.last_pushed_snapshot_id,
+                names=cfg.payload,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+        print(f"Snapshot : {manifest.snapshot_id}")
+        print(f"Device   : {manifest.device_id}  ({manifest.hostname})")
+        print(f"Kind     : {manifest.kind}")
+        print(f"Hash     : {manifest.content_hash}")
+        print(f"Size     : {_fmt_size(manifest.size_bytes)}")
+        print(f"Files    : {', '.join(manifest.payload_files)}")
+        if args.dry_run:
+            print()
+            print("(dry-run — tarball discarded, nothing pushed)")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# apply command
+# ---------------------------------------------------------------------------
+
+def _cmd_apply(args: argparse.Namespace) -> int:
+    from zensync.config import load as load_config
+    from zensync.payload import Manifest, apply
+    from zensync.profile import ProfileNotFoundError, discover
+
+    tarball_path = Path(args.from_file)
+    if not tarball_path.is_file():
+        print(f"error: tarball not found: {tarball_path}", file=sys.stderr)
+        return 1
+
+    manifest_path = tarball_path.with_suffix("").with_suffix(".json")
+    if not manifest_path.is_file():
+        print(f"error: manifest not found: {manifest_path}", file=sys.stderr)
+        return 1
+
+    manifest = Manifest.read(manifest_path)
+
+    cfg = load_config()
+    profile_path = Path(args.profile) if args.profile else (
+        Path(cfg.profile_path) if cfg.profile_path else None
+    )
+
+    try:
+        profile = discover(profile_path=profile_path)
+    except ProfileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Applying snapshot {manifest.snapshot_id} to {profile.root} ...")
+    try:
+        apply(
+            tarball_path=tarball_path,
+            manifest=manifest,
+            profile=profile,
+            local_backup_keep=cfg.local_backup_keep,
+        )
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print("Done.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 
@@ -106,6 +206,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also show optional payload files (zen-themes.json, xulstore.json)",
     )
 
+    p_push = sub.add_parser(
+        "push", help="Pack a snapshot (--dry-run skips network push)"
+    )
+    p_push.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Pack and print the manifest without pushing to the hub",
+    )
+    p_push.add_argument(
+        "--profile",
+        metavar="PATH",
+        help="Override auto-detected Zen profile path",
+    )
+
+    p_apply = sub.add_parser(
+        "apply", help="Apply a local snapshot tarball to the profile"
+    )
+    p_apply.add_argument(
+        "--from",
+        metavar="TARBALL",
+        dest="from_file",
+        required=True,
+        help="Path to the .tar.zst snapshot file (manifest .json must be alongside)",
+    )
+    p_apply.add_argument(
+        "--profile",
+        metavar="PATH",
+        help="Override auto-detected Zen profile path",
+    )
+
     return parser
 
 
@@ -119,6 +250,10 @@ def main() -> None:
 
     if args.command == "status":
         sys.exit(_cmd_status(args))
+    elif args.command == "push":
+        sys.exit(_cmd_push(args))
+    elif args.command == "apply":
+        sys.exit(_cmd_apply(args))
     else:
         parser.print_help()
         sys.exit(0)

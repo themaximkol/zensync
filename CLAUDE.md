@@ -16,6 +16,8 @@ python -m pytest -k test_name     # run a single test by name
 zensync status                    # print discovered profile and payload list
 zensync status --profile PATH     # override auto-detection
 zensync status --optional         # also show zen-themes.json and xulstore.json
+zensync push --dry-run            # pack a snapshot, print manifest, discard (no network)
+zensync apply --from <tarball>    # apply a local .tar.zst snapshot to the profile
 ```
 
 ## Roadmap
@@ -23,7 +25,7 @@ zensync status --optional         # also show zen-themes.json and xulstore.json
 No code exists yet. Implement in this order — each phase ends with something runnable and testable before moving on.
 
 - [x] **Phase 1 — Profile discovery** (`profile.py`): parse `profiles.ini`, find the payload files, print them with `zensync status`. No network. Verify on all target OSes.
-- [ ] **Phase 2 — Payload packaging** (`payload.py`): build a deterministic tarball, hash it, round-trip with `zensync push --dry-run` and `zensync apply --from <file>`. Test atomic apply against a fake profile dir.
+- [x] **Phase 2 — Payload packaging** (`payload.py`): build a deterministic tarball, hash it, round-trip with `zensync push --dry-run` and `zensync apply --from <file>`. Test atomic apply against a fake profile dir.
 - [ ] **Phase 3 — State machine + watcher** (`state.py`, `watcher.py`): `zensync agent` logs IDLE/RUNNING/PUSHING transitions with correct grace period. No network I/O yet.
 - [ ] **Phase 4 — Pi setup** (`pi/install-pi.sh`): create `zensync` user, `/var/lib/zensync` tree, install `zensync-update-pointer`. Verify `ssh pi cat /var/lib/zensync/latest.json` works over Tailscale.
 - [ ] **Phase 5 — Transport layer** (`transport.py`): wrap rsync push/pull, `latest.json` read, CAS pointer update. Unit-test with mocked subprocesses; smoke-test against real Pi.
