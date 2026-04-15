@@ -237,6 +237,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override auto-detected Zen profile path",
     )
 
+    p_agent = sub.add_parser(
+        "agent", help="Run the long-lived sync agent (autostart target)"
+    )
+    p_agent.add_argument(
+        "--profile",
+        metavar="PATH",
+        help="Override auto-detected Zen profile path",
+    )
+
     return parser
 
 
@@ -254,6 +263,11 @@ def main() -> None:
         sys.exit(_cmd_push(args))
     elif args.command == "apply":
         sys.exit(_cmd_apply(args))
+    elif args.command == "agent":
+        from zensync.agent import run as run_agent
+        profile_path = Path(args.profile) if args.profile else None
+        run_agent(profile_path=profile_path)
+        sys.exit(0)
     else:
         parser.print_help()
         sys.exit(0)
