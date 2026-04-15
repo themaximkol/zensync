@@ -1,0 +1,13 @@
+[Unit]
+Description=Run ZenSync pruning once a day
+Requires=zensync-prune.service
+
+[Timer]
+# Fire at 03:00 local time every day; randomise by up to 10 min to avoid
+# thundering-herd on multi-pi setups.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

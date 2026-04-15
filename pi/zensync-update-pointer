@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""
+zensync-update-pointer — atomic compare-and-swap update for latest.json
+
+Reads the new pointer JSON from stdin, acquires an exclusive flock on
+latest.lock, verifies the expected_updated_at matches the current file
+(if supplied), then writes latest.json atomically via a tmp-file rename.
+
+Usage:
+    echo '{...}' | zensync-update-pointer [--expected-updated-at TS] [--base-dir DIR]
+
+Exit codes:
+    0  success
+    1  CAS failure — existing updated_at does not match expected; client must retry
+    2  usage error or I/O failure
+"""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import stat
+import sys
+import tempfile
+
+DEFAULT_BASE_DIR = "/var/lib/zensync"
+
+
+def update_pointer(
+    base_dir: str,
+    new_pointer: dict,
+    expected_updated_at: str,
+) -> bool:
+    """
+    Atomically update latest.json under an exclusive flock.
+
+    Args:
+        base_dir:             Root of the zensync data directory.
+        new_pointer:          Dict to serialise as the new latest.json.
+        expected_updated_at:  The ``updated_at`` value the caller last saw in
+                              latest.json.  Empty string skips the CAS check
+                              (use for the very first push when no pointer exists).
+
+    Returns:
+        True on success; False if the CAS check fails (stale expectation).
+
+    Raises:
+        OSError: On file-system errors unrelated to CAS.
+    """
+    latest_path = os.path.join(base_dir, "latest.json")
+    lock_path = os.path.join(base_dir, "latest.lock")
+
+    # Ensure the lock file exists before trying to flock it.
+    lock_fd = open(lock_path, "a+")  # create if absent, never truncate
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        # ── CAS check ────────────────────────────────────────────────────────
+        if expected_updated_at:
+            if os.path.exists(latest_path):
+                with open(latest_path, encoding="utf-8") as f:
+                    current = json.load(f)
+                if current.get("updated_at", "") != expected_updated_at:
+                    return False
+            else:
+                # Caller expected a specific timestamp but the file is absent.
+                return False
+
+        # ── Atomic write: tmp → fsync → rename ───────────────────────────────
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=base_dir, prefix=".latest-tmp-")
+        try:
+            payload = json.dumps(new_pointer, indent=2).encode("utf-8")
+            os.write(tmp_fd, payload)
+            os.fsync(tmp_fd)
+            os.close(tmp_fd)
+            tmp_fd = -1
+            # Mode 0600: only the zensync user can read/write.
+            os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+            os.replace(tmp_path, latest_path)
+        except Exception:
+            if tmp_fd != -1:
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        return True
+
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Atomic CAS update for /var/lib/zensync/latest.json",
+    )
+    parser.add_argument(
+        "--expected-updated-at",
+        default="",
+        metavar="TIMESTAMP",
+        help=(
+            "The updated_at value from the latest.json the client last read. "
+            "Omit or pass an empty string to skip the CAS check (initial push)."
+        ),
+    )
+    parser.add_argument(
+        "--base-dir",
+        default=DEFAULT_BASE_DIR,
+        metavar="DIR",
+        help=f"Root of the zensync data directory (default: {DEFAULT_BASE_DIR})",
+    )
+    args = parser.parse_args(argv)
+
+    raw = sys.stdin.read()
+    try:
+        new_pointer = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"error: invalid JSON on stdin: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        ok = update_pointer(args.base_dir, new_pointer, args.expected_updated_at)
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if not ok:
+        print(
+            "CAS failure: latest.json was updated by another client "
+            "(expected updated_at does not match current file).",
+            file=sys.stderr,
+        )
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

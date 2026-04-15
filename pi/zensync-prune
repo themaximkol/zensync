@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""
+zensync-prune — daily snapshot retention for /var/lib/zensync/
+
+Retention policy
+----------------
+Hard snapshots (kind=hard):
+  - Keep all snapshots created within the last 30 days.
+  - For snapshots 31–90 days old: keep the newest one per calendar day (UTC),
+    delete the rest.
+  - Delete everything older than 90 days.
+
+Soft snapshots (kind=soft):
+  - Keep the 5 newest per device; delete the rest.
+
+Protected:
+  - Never delete the snapshot currently referenced by latest.json.
+
+Usage:
+    zensync-prune [--base-dir DIR] [--dry-run]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+DEFAULT_BASE_DIR = "/var/lib/zensync"
+HARD_KEEP_FULL_DAYS = 30       # keep every hard snapshot for this many days
+HARD_KEEP_THINNED_DAYS = 90    # then thin to one/day until this many days ago
+SOFT_KEEP_PER_DEVICE = 5
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _load_protected_id(base_dir: Path) -> str | None:
+    latest = base_dir / "latest.json"
+    if not latest.is_file():
+        return None
+    try:
+        return json.loads(latest.read_text(encoding="utf-8")).get("snapshot_id")
+    except Exception:
+        return None
+
+
+def _parse_snapshot_time(snapshot_id: str) -> datetime | None:
+    """
+    Extract the UTC datetime embedded in a snapshot_id.
+    snapshot_id format: ``2026-04-14T101455Z-a1b2c3d4``
+    """
+    try:
+        ts = snapshot_id.rsplit("-", 1)[0]   # "2026-04-14T101455Z"
+        return datetime.strptime(ts, "%Y-%m-%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _load_manifests(snapshots_dir: Path) -> list[dict]:
+    """
+    Read every manifest *.json sidecar from snapshots/<device_id>/ subdirs.
+    Adds private keys: _manifest_path, _blob_path.
+    Skips files that cannot be parsed.
+    """
+    manifests: list[dict] = []
+    if not snapshots_dir.is_dir():
+        return manifests
+    for device_dir in sorted(snapshots_dir.iterdir()):
+        if not device_dir.is_dir():
+            continue
+        for json_file in sorted(device_dir.glob("*.json")):
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            data["_manifest_path"] = json_file
+            data["_blob_path"] = json_file.with_suffix("").with_suffix(".tar.zst")
+            manifests.append(data)
+    return manifests
+
+
+def _delete(path: Path, dry_run: bool) -> str:
+    label = f"[dry-run] would delete" if dry_run else "deleted"
+    if not dry_run and path.is_file():
+        path.unlink()
+    return f"{label}: {path}"
+
+
+# ---------------------------------------------------------------------------
+# Core pruning logic (importable for tests)
+# ---------------------------------------------------------------------------
+
+def prune(
+    base_dir: Path,
+    dry_run: bool = False,
+    now: datetime | None = None,
+) -> list[str]:
+    """
+    Apply the retention policy and return a list of human-readable log lines.
+
+    ``now`` may be injected for deterministic testing; defaults to UTC now.
+    """
+    if now is None:
+        now = datetime.now(tz=timezone.utc)
+
+    cutoff_full = now - timedelta(days=HARD_KEEP_FULL_DAYS)
+    cutoff_thin = now - timedelta(days=HARD_KEEP_THINNED_DAYS)
+
+    protected_id = _load_protected_id(base_dir)
+    manifests = _load_manifests(base_dir / "snapshots")
+
+    # ── Group by device ───────────────────────────────────────────────────────
+    by_device: dict[str, list[dict]] = {}
+    for m in manifests:
+        by_device.setdefault(m.get("device_id", "unknown"), []).append(m)
+
+    log: list[str] = []
+
+    for device_id, entries in sorted(by_device.items()):
+        hard = sorted(
+            [e for e in entries if e.get("kind") == "hard"],
+            key=lambda e: e["snapshot_id"],
+        )
+        soft = sorted(
+            [e for e in entries if e.get("kind") == "soft"],
+            key=lambda e: e["snapshot_id"],
+        )
+
+        # ── Hard retention ────────────────────────────────────────────────────
+        thin_zone: dict[str, list[dict]] = {}  # day → list of manifests
+
+        for m in hard:
+            if m["snapshot_id"] == protected_id:
+                continue
+            t = _parse_snapshot_time(m["snapshot_id"])
+            if t is None:
+                continue
+
+            if t < cutoff_thin:
+                # Older than 90 days → delete
+                log.append(_delete(m["_manifest_path"], dry_run))
+                log.append(_delete(m["_blob_path"], dry_run))
+            elif t < cutoff_full:
+                # 30–90 days old → thin to one per day
+                day_key = t.strftime("%Y-%m-%d")
+                thin_zone.setdefault(day_key, []).append(m)
+            # else: within last 30 days → keep
+
+        for _day, day_entries in sorted(thin_zone.items()):
+            # day_entries already sorted by snapshot_id (ascending).
+            # Keep the newest (last); delete the rest.
+            for m in day_entries[:-1]:
+                if m["snapshot_id"] != protected_id:
+                    log.append(_delete(m["_manifest_path"], dry_run))
+                    log.append(_delete(m["_blob_path"], dry_run))
+
+        # ── Soft retention ────────────────────────────────────────────────────
+        # soft is sorted ascending; keep the last SOFT_KEEP_PER_DEVICE entries.
+        for m in soft[:-SOFT_KEEP_PER_DEVICE] if len(soft) > SOFT_KEEP_PER_DEVICE else []:
+            if m["snapshot_id"] != protected_id:
+                log.append(_delete(m["_manifest_path"], dry_run))
+                log.append(_delete(m["_blob_path"], dry_run))
+
+    return log
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Daily snapshot retention pruning")
+    parser.add_argument(
+        "--base-dir",
+        default=DEFAULT_BASE_DIR,
+        metavar="DIR",
+        help=f"Root of the zensync data directory (default: {DEFAULT_BASE_DIR})",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be deleted without removing anything",
+    )
+    args = parser.parse_args(argv)
+
+    lines = prune(Path(args.base_dir), dry_run=args.dry_run)
+    for line in lines:
+        print(line)
+    if not lines:
+        print("Nothing to prune.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

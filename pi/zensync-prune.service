@@ -1,0 +1,10 @@
+[Unit]
+Description=ZenSync snapshot pruning
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=zensync
+ExecStart=/usr/local/bin/zensync-prune
+StandardOutput=journal
+StandardError=journal
