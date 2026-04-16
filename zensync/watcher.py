@@ -67,7 +67,7 @@ def is_zen_running(profile: ZenProfile) -> bool:
     keeps the result True — this is intentional (conservative: never push to a
     profile that might be in mid-write).
     """
-    if profile.lockfile.exists():
+    if profile.lockfile.exists() or profile.lockfile.is_symlink():
         return True
     return _psutil_finds_zen()
 
