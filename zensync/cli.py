@@ -139,8 +139,7 @@ def _cmd_push(args: argparse.Namespace) -> int:
     from zensync.watcher import is_zen_running
 
     if is_zen_running(profile):
-        print("error: Zen Browser is running — stop it before pushing.", file=sys.stderr)
-        return 1
+        print("Note: Zen Browser is running — pushing current file state as-is.")
 
     print("Pushing snapshot to hub…")
     try:

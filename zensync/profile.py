@@ -16,7 +16,6 @@ from typing import Optional
 
 # Files always included in the sync payload
 PAYLOAD_REQUIRED: tuple[str, ...] = (
-    "zen-session.jsonlz4",
     "sessionstore.jsonlz4",
     "containers.json",
 )

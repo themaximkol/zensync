@@ -43,7 +43,7 @@ def _psutil_finds_zen() -> bool:
         for proc in psutil.process_iter(["name", "exe"]):
             try:
                 proc_name = (proc.info.get("name") or "").lower()
-                proc_exe = (proc.info.get("exe") or "").lower()
+                proc_exe = Path(proc.info.get("exe") or "").name.lower()
                 if any(n in proc_name or n in proc_exe for n in names):
                     return True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
