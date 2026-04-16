@@ -8,11 +8,10 @@
 #   --hub HOST        Tailscale hostname of the Pi hub (default: raspberrypi)
 #   --user USER       SSH user on the hub (default: zensync)
 #   --device NAME     Human name for this machine (default: hostname)
-#   --setup-hub       Also set up this machine as the storage hub (run as root
-#                     or with sudo — use this on the Raspberry Pi itself)
+#   --setup-hub       Also set up this machine as the storage hub (requires sudo)
 #
 # Examples:
-#   # Regular client (Ubuntu desktop, Windows-via-WSL, second Pi, …)
+#   # Regular client
 #   bash install-client-linux.sh --hub raspberrypi --device thinkpad-x1
 #
 #   # Raspberry Pi that is BOTH hub and client (one command does everything)
@@ -24,8 +23,6 @@ HUB_HOST="raspberrypi"
 HUB_USER="zensync"
 DEVICE_NAME="$(hostname)"
 SETUP_HUB=0
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zensync"
-SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
@@ -39,13 +36,32 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ── Resolve the real (non-root) user even when called via sudo ────────────────
+# Hub setup needs root; the client parts (pip, config, systemd) must run as
+# the real user so paths and services land in the right place.
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+REAL_PYTHON="$(su -c 'command -v python3' - "$REAL_USER" 2>/dev/null || echo python3)"
+
+# Run a command as the real user (no-op if we're not root).
+_as_user() {
+    if [[ "$EUID" -eq 0 && "$REAL_USER" != "root" ]]; then
+        sudo -u "$REAL_USER" -- "$@"
+    else
+        "$@"
+    fi
+}
+
+CONFIG_DIR="${REAL_HOME}/.config/zensync"
+SYSTEMD_USER_DIR="${REAL_HOME}/.config/systemd/user"
+
 # ── Check prerequisites ───────────────────────────────────────────────────────
 echo "Checking prerequisites…"
 
-python3 --version >/dev/null 2>&1 || { echo "error: python3 not found" >&2; exit 1; }
-PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)"; then
-    echo "  [ok] Python $PY_VER"
+"$REAL_PYTHON" --version >/dev/null 2>&1 || { echo "error: python3 not found" >&2; exit 1; }
+PY_VER=$("$REAL_PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+if "$REAL_PYTHON" -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)"; then
+    echo "  [ok] Python $PY_VER (user: $REAL_USER)"
 else
     echo "error: Python 3.11+ required (found $PY_VER)" >&2; exit 1
 fi
@@ -97,7 +113,7 @@ if [[ $SETUP_HUB -eq 1 ]]; then
         if [[ ! -f "$src" ]]; then
             echo "error: cannot find $src" >&2; exit 1
         fi
-        install -m 755 -o root      -g root      "$src" "$SYS_BIN/$script"
+        install -m 755 -o root        -g root        "$src" "$SYS_BIN/$script"
         install -m 755 -o "$HUB_USER" -g "$HUB_USER" "$src" "$DATA_DIR/bin/$script"
         echo "  [installed] $script"
     done
@@ -130,48 +146,50 @@ if [[ $SETUP_HUB -eq 1 ]]; then
     echo ""
 fi
 
-# ── Install the package ───────────────────────────────────────────────────────
+# ── Install the package (runs as the real user) ───────────────────────────────
 echo "Installing zensync package…"
 
-# Detect the right install mode:
-#   1. Already inside a venv  → plain pip install
-#   2. Externally-managed OS Python (Debian/RPi OS) → create ~/.local/zensync-venv
-#   3. Normal user Python     → pip install --user
-VENV_DIR="$HOME/.local/zensync-venv"
+# Detect whether the real user's Python is externally-managed (Debian/RPi OS).
+# Check for the EXTERNALLY-MANAGED marker file — the official PEP 668 signal.
+STDLIB=$("$REAL_PYTHON" -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
+VENV_DIR="${REAL_HOME}/.local/zensync-venv"
 
-_in_venv() { python3 -c "import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)" 2>/dev/null; }
-_is_managed() { python3 -m pip install --dry-run pip 2>&1 | grep -q "externally-managed"; }
-
-if _in_venv; then
-    PIP="pip"
-    ZENSYNC_BIN="$(command -v zensync 2>/dev/null || echo "$VIRTUAL_ENV/bin/zensync")"
-elif _is_managed; then
-    echo "  Externally-managed Python detected — creating venv at $VENV_DIR"
-    python3 -m venv "$VENV_DIR"
+if _as_user "$REAL_PYTHON" -c "import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)" 2>/dev/null; then
+    # Already inside a venv
+    PIP="$(_as_user command -v pip || echo pip)"
+    ZENSYNC_BIN="$(_as_user command -v zensync 2>/dev/null || echo "${VIRTUAL_ENV:-}/bin/zensync")"
+elif [[ -f "$STDLIB/EXTERNALLY-MANAGED" ]]; then
+    echo "  Externally-managed Python — creating venv at $VENV_DIR"
+    _as_user "$REAL_PYTHON" -m venv "$VENV_DIR"
     PIP="$VENV_DIR/bin/pip"
     ZENSYNC_BIN="$VENV_DIR/bin/zensync"
 else
-    PIP="pip"
-    ZENSYNC_BIN="$(command -v zensync 2>/dev/null || echo "$HOME/.local/bin/zensync")"
+    PIP="$REAL_PYTHON -m pip"
+    ZENSYNC_BIN="${REAL_HOME}/.local/bin/zensync"
 fi
 
 if [[ -f "$SCRIPT_DIR/../pyproject.toml" ]]; then
-    $PIP install --quiet -e "$SCRIPT_DIR/.."
+    _as_user $PIP install --quiet -e "$SCRIPT_DIR/.."
 else
-    $PIP install --quiet zensync
+    _as_user $PIP install --quiet zensync
+fi
+
+# If --user install, the binary may not exist yet — check common fallback.
+if [[ ! -f "$ZENSYNC_BIN" ]]; then
+    ZENSYNC_BIN="$(_as_user command -v zensync 2>/dev/null || echo "$ZENSYNC_BIN")"
 fi
 
 echo "  [ok] zensync at $ZENSYNC_BIN"
 
 # ── Write initial config ──────────────────────────────────────────────────────
 echo "Writing config…"
-mkdir -p "$CONFIG_DIR"
+_as_user mkdir -p "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/client.toml"
 
 if [[ -f "$CONFIG_FILE" ]]; then
     echo "  [skip] $CONFIG_FILE already exists — not overwriting"
 else
-    cat > "$CONFIG_FILE" << TOML
+    _as_user tee "$CONFIG_FILE" > /dev/null << TOML
 [hub]
 host = "$HUB_HOST"
 user = "$HUB_USER"
@@ -208,19 +226,18 @@ TOML
 fi
 
 # ── Trust hub SSH host key ────────────────────────────────────────────────────
-# Skip localhost (hub + client on the same machine).
 if [[ -n "$HUB_HOST" && "$HUB_HOST" != "localhost" && "$HUB_HOST" != "127.0.0.1" ]]; then
     echo "Trusting hub SSH host key for $HUB_HOST…"
-    ssh -o StrictHostKeyChecking=accept-new "$HUB_USER@$HUB_HOST" true 2>/dev/null \
+    _as_user ssh -o StrictHostKeyChecking=accept-new "$HUB_USER@$HUB_HOST" true 2>/dev/null \
         && echo "  [ok] host key accepted" \
         || echo "  [warn] could not connect to $HUB_HOST — add the host key manually later"
 fi
 
 # ── Install and enable systemd user service ───────────────────────────────────
 echo "Installing systemd user service…"
-mkdir -p "$SYSTEMD_USER_DIR"
+_as_user mkdir -p "$SYSTEMD_USER_DIR"
 
-cat > "$SYSTEMD_USER_DIR/zensync-agent.service" << SERVICE
+_as_user tee "$SYSTEMD_USER_DIR/zensync-agent.service" > /dev/null << SERVICE
 [Unit]
 Description=ZenSync browser-sync agent
 After=network-online.target graphical-session.target
@@ -237,25 +254,25 @@ TimeoutStopSec=30
 WantedBy=default.target
 SERVICE
 
-systemctl --user daemon-reload
-systemctl --user enable --now zensync-agent.service
+_as_user systemctl --user daemon-reload
+_as_user systemctl --user enable --now zensync-agent.service
 echo "  [enabled] zensync-agent.service"
 
 # Enable linger so the service starts at boot, not just at graphical login.
 if command -v loginctl >/dev/null 2>&1; then
-    loginctl enable-linger "$USER" 2>/dev/null \
+    loginctl enable-linger "$REAL_USER" 2>/dev/null \
         && echo "  [ok] linger enabled — agent will start at boot" \
-        || echo "  [warn] could not enable linger (may need sudo) — agent starts at login only"
+        || echo "  [warn] could not enable linger — agent starts at login only"
 fi
 
 # ── Smoke test ────────────────────────────────────────────────────────────────
 echo ""
 echo "Testing profile discovery…"
-"$ZENSYNC_BIN" status 2>&1 | head -5 || echo "  (profile not found — is Zen Browser installed?)"
+_as_user "$ZENSYNC_BIN" status 2>&1 | head -5 || echo "  (profile not found — is Zen Browser installed?)"
 
 echo ""
 echo "Checking agent status…"
-systemctl --user status zensync-agent.service --no-pager -l | head -10 || true
+_as_user systemctl --user status zensync-agent.service --no-pager -l | head -10 || true
 
 # ── Post-install instructions ─────────────────────────────────────────────────
 if [[ $SETUP_HUB -eq 1 ]]; then
@@ -295,8 +312,8 @@ Installation complete.
   Status   : systemctl --user status zensync-agent
   Restart  : systemctl --user restart zensync-agent
 
-The agent pulls from the hub immediately on startup, then every 3 minutes
-while Zen is idle. It pushes automatically after Zen closes.
+The agent pulls from the hub every 3 minutes while idle and pushes
+automatically after Zen closes.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF
 fi
