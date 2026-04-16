@@ -585,6 +585,278 @@ def _show_mozlz4_diff(path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# upd
+# ---------------------------------------------------------------------------
+
+def _cmd_upd(args: argparse.Namespace) -> int:
+    import subprocess
+    import zensync as _pkg
+
+    tty = sys.stdout.isatty()
+    def _esc(*c: int) -> str:
+        return f"\033[{';'.join(str(x) for x in c)}m" if tty else ""
+    RESET = _esc(0); BOLD = _esc(1); GREEN = _esc(92); YELLOW = _esc(93); RED = _esc(91); DIM = _esc(2)
+
+    def ok(msg: str)   -> None: print(f"  {GREEN}✓{RESET}  {msg}")
+    def warn(msg: str) -> None: print(f"  {YELLOW}!{RESET}  {msg}")
+    def err(msg: str)  -> None: print(f"  {RED}✗{RESET}  {msg}", file=sys.stderr)
+    def step(msg: str) -> None: print(f"\n{BOLD}{msg}{RESET}")
+
+    repo_dir = Path(_pkg.__file__).parent.parent
+    is_git   = (repo_dir / ".git").is_dir()
+
+    from zensync import __version__ as version_before
+
+    # ── 1. Pull / upgrade ─────────────────────────────────────────────────────
+    step("Updating package…")
+    if is_git:
+        print(f"  repo: {repo_dir}")
+        r = subprocess.run(
+            ["git", "-C", str(repo_dir), "pull", "--ff-only"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            err(f"git pull failed:\n{r.stderr.strip()}")
+            return 1
+        changed = "Already up to date." not in r.stdout
+        print(f"  {DIM}{r.stdout.strip()}{RESET}")
+
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-e", str(repo_dir), "-q"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            err(f"pip install failed:\n{r.stderr.strip()}")
+            return 1
+        ok("package reinstalled")
+    else:
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "zensync", "-q"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            err(f"pip upgrade failed:\n{r.stderr.strip()}")
+            return 1
+        ok("pip upgrade done")
+
+    # Re-import to get updated version
+    import importlib, zensync as _pkg2
+    importlib.reload(_pkg2)
+    version_after = _pkg2.__version__
+    if version_after != version_before:
+        ok(f"version  {DIM}{version_before}{RESET} → {GREEN}{version_after}{RESET}")
+    else:
+        ok(f"version  {version_after}  (unchanged)")
+
+    # ── 2. Restart agent ──────────────────────────────────────────────────────
+    if not getattr(args, "no_restart", False):
+        step("Restarting agent…")
+        r = subprocess.run(
+            ["systemctl", "--user", "restart", "zensync-agent.service"],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            ok("zensync-agent.service restarted")
+        else:
+            warn("agent service not found or not running (OK if agent not installed yet)")
+
+    # ── 3. Update Pi scripts ───────────────────────────────────────────────────
+    if getattr(args, "pi", False):
+        step("Updating Pi helper scripts…")
+        from zensync.config import load as load_config
+        cfg = load_config()
+        hub = f"{cfg.hub_user}@{cfg.hub_host}"
+        remote_bin = f"{cfg.hub_remote_root}/bin"
+
+        scripts = ["zensync-update-pointer", "zensync-prune"]
+        any_fail = False
+
+        for script in scripts:
+            src = repo_dir / "pi" / script
+            if not src.is_file():
+                warn(f"{script} not found in repo/pi/ — skipping")
+                continue
+            r = subprocess.run(
+                [cfg.rsync_path, "-a", str(src), f"{hub}:{remote_bin}/{script}"],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0:
+                ok(f"{script}  →  {hub}:{remote_bin}/")
+            else:
+                err(f"{script}: {r.stderr.strip()}")
+                any_fail = True
+
+        if not any_fail:
+            # Ensure executable bits are set (rsync preserves them, but belt-and-suspenders)
+            subprocess.run(
+                [cfg.ssh_path, hub, f"chmod 755 {remote_bin}/zensync-update-pointer {remote_bin}/zensync-prune"],
+                capture_output=True,
+            )
+            ok("permissions set")
+        else:
+            warn("some Pi scripts failed to update — check SSH connectivity")
+
+    print(f"\n{GREEN}{BOLD}Done.{RESET}\n")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# log
+# ---------------------------------------------------------------------------
+
+def _cmd_log(args: argparse.Namespace) -> int:
+    import re
+    import subprocess
+
+    tty = sys.stdout.isatty()
+
+    def _esc(*codes: int) -> str:
+        return f"\033[{';'.join(str(c) for c in codes)}m" if tty else ""
+
+    RESET  = _esc(0)
+    BOLD   = _esc(1)
+    DIM    = _esc(2)
+    RED    = _esc(91)
+    GREEN  = _esc(92)
+    YELLOW = _esc(93)
+    BLUE   = _esc(94)
+    CYAN   = _esc(96)
+
+    width = shutil.get_terminal_size((80, 24)).columns
+    session_count = 0
+    browser_count = 0
+    browser_open  = False
+
+    def _session_header(timestamp: str) -> None:
+        nonlocal session_count, browser_count, browser_open
+        browser_count = 0
+        browser_open  = False
+        session_count += 1
+        bar   = "━" * width
+        label = f"  Session {session_count}  ·  {timestamp}"
+        pad   = " " * max(0, width - len(label))
+        print(f"\n{BOLD}{CYAN}{bar}{RESET}")
+        print(f"{BOLD}{CYAN}{label}{pad}{RESET}")
+        print(f"{BOLD}{CYAN}{bar}{RESET}")
+
+    def _browser_open(time_str: str) -> None:
+        nonlocal browser_count, browser_open
+        browser_count += 1
+        browser_open  = True
+        inner = width - 4
+        label = f" Zen #{browser_count} · {time_str} "
+        bar   = "┄" * max(0, inner - len(label))
+        print(f"\n  {YELLOW}{BOLD}┄{label}{bar}{RESET}")
+
+    def _browser_close(time_str: str) -> None:
+        nonlocal browser_open
+        browser_open = False
+        inner = width - 4
+        label = f" closed · {time_str} "
+        bar   = "┄" * max(0, inner - len(label))
+        print(f"  {YELLOW}{bar}{label}┄{RESET}\n")
+
+    # journalctl short format: "Apr 16 16:43:14 host proc[pid]: message"
+    _JNL = re.compile(r'^(\w{3}\s+\d+\s+[\d:]+)\s+\S+\s+([\w@.-]+)\[(\d+)\]:\s+(.*)$')
+    # Agent log body: "2026-04-16T16:43:14  INFO     text"
+    _AGENT = re.compile(r'^\d{4}-\d{2}-\d{2}T([\d:]+)\s+(INFO|WARNING|ERROR|DEBUG|CRITICAL)\s+(.*)$')
+
+    def _colorize(level: str, text: str) -> str:
+        tl = text.lower()
+
+        # Level badge (4 chars wide)
+        if level == "ERROR":
+            badge = f"{RED}{BOLD}ERRO{RESET}"
+        elif level == "WARNING":
+            badge = f"{YELLOW}WARN{RESET}"
+        elif level == "DEBUG":
+            badge = f"{DIM}DEBG{RESET}"
+        else:
+            badge = f"{DIM}INFO{RESET}"
+
+        # Message body color
+        if "→" in text:
+            body = f"{BOLD}{CYAN}{text}{RESET}"
+        elif text.startswith("Pushed"):
+            body = f"{BOLD}{GREEN}{text}{RESET}"
+        elif text.startswith("Pulled"):
+            body = f"{BOLD}{BLUE}{text}{RESET}"
+        elif "already up to date" in tl:
+            body = f"{DIM}{text}{RESET}"
+        elif "checking hub" in tl:
+            body = f"{DIM}{text}{RESET}"
+        elif "hub unreachable" in tl or "failed" in tl:
+            body = f"{YELLOW}{text}{RESET}"
+        elif level == "ERROR":
+            body = f"{RED}{text}{RESET}"
+        elif level == "WARNING":
+            body = f"{YELLOW}{text}{RESET}"
+        else:
+            body = text
+
+        return f"{badge}  {body}"
+
+    cmd = [
+        "journalctl", "--user", "-u", "zensync-agent",
+        "--no-pager", "--output=short",
+    ]
+    if not getattr(args, "no_follow", False):
+        cmd.append("-f")
+    cmd += ["-n", str(getattr(args, "lines", None) or 500)]
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        print("error: journalctl not found — is systemd running?", file=sys.stderr)
+        return 1
+
+    assert proc.stdout is not None
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            m = _JNL.match(line)
+            if not m:
+                continue
+            jnl_time, process, _pid, message = m.groups()
+
+            # Session boundary — systemd "Started" line
+            if "systemd" in process and "Started zensync-agent.service" in message:
+                _session_header(jnl_time)
+                continue
+
+            # Skip non-agent lines
+            if "zensync" not in process:
+                continue
+
+            am = _AGENT.match(message)
+            if am:
+                time_str, level, text = am.groups()
+
+                # Browser session boundary markers
+                if "→ RUNNING" in text:
+                    _browser_open(time_str)
+                elif "PUSHING → IDLE" in text:
+                    ts = f"{DIM}{time_str}{RESET}" if tty else time_str
+                    print(f"  {ts}  {_colorize(level, text)}")
+                    _browser_close(time_str)
+                    continue
+
+                ts = f"{DIM}{time_str}{RESET}" if tty else time_str
+                print(f"  {ts}  {_colorize(level, text)}")
+            else:
+                # Unstructured (e.g. argparse help on misconfigured start)
+                print(f"  {DIM}{message}{RESET}" if tty else f"  {message}")
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        proc.terminate()
+        proc.wait()
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
 
@@ -653,6 +925,20 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("agent", help="Run the long-lived sync agent")
     p.add_argument("--profile", metavar="PATH")
 
+    # log
+    p = sub.add_parser("log", help="Show agent logs with colors and session markers")
+    p.add_argument("--no-follow", action="store_true",
+                   help="Print recent logs and exit instead of following")
+    p.add_argument("-n", "--lines", type=int, metavar="N",
+                   help="Number of recent lines to show (default: 500)")
+
+    # upd
+    p = sub.add_parser("upd", help="Update zensync to the latest version from GitHub")
+    p.add_argument("--pi", action="store_true",
+                   help="Also update Pi helper scripts via SSH")
+    p.add_argument("--no-restart", action="store_true",
+                   help="Skip restarting the agent service after update")
+
     return parser
 
 
@@ -674,6 +960,8 @@ def main() -> None:
         "history": _cmd_history,
         "restore": _cmd_restore,
         "diff":    _cmd_diff,
+        "log":     _cmd_log,
+        "upd":     _cmd_upd,
     }
 
     if args.command in dispatch:

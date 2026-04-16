@@ -54,14 +54,22 @@ def _do_hard_push(cfg: Config, profile, state: State, log: logging.Logger) -> Op
 
 def _do_pull(cfg: Config, profile, state: State, log: logging.Logger) -> Optional[object]:
     """Check latest + download + apply.  Returns Manifest or None."""
-    from zensync.transport import TransportError, pull
+    from zensync.transport import TransportError, HubUnreachableError, pull, read_latest
+    log.debug("Checking hub for updates…")
     try:
-        manifest = pull(cfg, profile, state, conflict_policy=cfg.conflict_policy)
+        # The agent is unattended — always prefer remote so new snapshots
+        # from other devices are applied without blocking on user input.
+        manifest = pull(cfg, profile, state, conflict_policy="prefer-remote")
         if manifest:
             state.save()
+        else:
+            log.debug("Already up to date.")
         return manifest
+    except HubUnreachableError as exc:
+        log.debug("Hub unreachable: %s", exc)
+        return None
     except TransportError as exc:
-        log.warning("Pull failed (hub unreachable?): %s", exc)
+        log.warning("Pull failed: %s", exc)
         return None
 
 
@@ -179,12 +187,10 @@ async def _run_async(
             running = await asyncio.to_thread(is_zen_running, profile)
 
             # ── State machine transitions ──────────────────────────────────
-            if sm.phase == AgentPhase.IDLE and running:
-                sm.on_zen_started()
-
+            if running:
+                sm.on_zen_started()   # IDLE→RUNNING, or cancels grace countdown
             elif sm.phase == AgentPhase.RUNNING:
-                if not running:
-                    sm.on_zen_stopped()
+                sm.on_zen_stopped()   # starts grace period countdown
 
             # ── PUSHING: pack + push ───────────────────────────────────────
             if sm.tick():
@@ -198,15 +204,21 @@ async def _run_async(
                 sm.push_done()
                 # Check soft promotion after returning to IDLE.
                 await asyncio.to_thread(_maybe_promote_soft, cfg, state, log)
+                # Reset pull timer so we check for remote changes immediately
+                # after a push — another device may have pushed concurrently.
+                _last_pull = 0.0
 
             # ── IDLE: periodic pull ────────────────────────────────────────
             if (
                 sm.phase == AgentPhase.IDLE
                 and now - _last_pull >= cfg.idle_pull_interval_seconds
             ):
+                log.info("Checking hub for updates…")
                 manifest = await asyncio.to_thread(_do_pull, cfg, profile, state, log)
                 if manifest:
-                    log.info("Pulled  : %s", manifest.snapshot_id)
+                    log.info("Pulled  : %s  (%s)", manifest.snapshot_id, manifest.hostname)
+                else:
+                    log.info("Already up to date.")
                 _last_pull = time.monotonic()
 
             # ── RUNNING: soft checkpoint ───────────────────────────────────

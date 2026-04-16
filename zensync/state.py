@@ -95,10 +95,14 @@ class AgentStateMachine:
         self._log.info("%-7s → %s", old.value, new_phase.value)
 
     def on_zen_started(self) -> None:
-        """Call when the Zen process is first detected."""
+        """Call when the Zen process is detected."""
         if self._phase == AgentPhase.IDLE:
             self._zen_gone_at = None
             self._transition(AgentPhase.RUNNING)
+        elif self._phase == AgentPhase.RUNNING and self._zen_gone_at is not None:
+            # Zen restarted before the grace period elapsed — cancel the push.
+            self._zen_gone_at = None
+            self._log.info("Zen restarted during grace period — push cancelled")
 
     def on_zen_stopped(self) -> None:
         """Call each poll cycle while RUNNING and Zen is gone; records the time once."""

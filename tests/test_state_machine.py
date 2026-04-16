@@ -145,6 +145,37 @@ class TestGracePeriod:
         assert sm.tick() is False
         assert sm.phase == AgentPhase.RUNNING
 
+    def test_zen_restart_during_grace_cancels_push(self):
+        # Zen closes, then reopens before the grace period expires.
+        # The push must be cancelled — we must not pack files while Zen is open.
+        clock = FakeClock()
+        sm = make_sm(grace=5.0, clock=clock)
+        sm.on_zen_started()
+        sm.on_zen_stopped()        # grace countdown starts at t=0
+
+        clock.advance(3.0)         # still within grace window
+        sm.on_zen_started()        # Zen reopened — cancel the countdown
+
+        clock.advance(10.0)        # well past original grace deadline
+        assert sm.tick() is False  # must NOT push
+        assert sm.phase == AgentPhase.RUNNING
+
+    def test_zen_restart_after_grace_still_pushes(self):
+        # Zen closes, grace elapses, push happens, then Zen opens again.
+        # The second open should not interfere with the completed push.
+        clock = FakeClock()
+        sm = make_sm(grace=5.0, clock=clock)
+        sm.on_zen_started()
+        sm.on_zen_stopped()
+        clock.advance(5.0)
+
+        assert sm.tick() is True           # push triggered
+        assert sm.phase == AgentPhase.PUSHING
+        sm.push_done()                     # push complete → IDLE
+
+        sm.on_zen_started()                # Zen opens again → RUNNING
+        assert sm.phase == AgentPhase.RUNNING
+
 
 # ---------------------------------------------------------------------------
 # PUSHING → IDLE

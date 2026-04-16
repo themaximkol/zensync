@@ -50,6 +50,7 @@ fi
 install -d -m 700 -o "$ZENSYNC_USER" -g "$ZENSYNC_USER" "$DATA_DIR"
 install -d -m 700 -o "$ZENSYNC_USER" -g "$ZENSYNC_USER" "$DATA_DIR/snapshots"
 install -d -m 700 -o "$ZENSYNC_USER" -g "$ZENSYNC_USER" "$DATA_DIR/tmp"
+install -d -m 700 -o "$ZENSYNC_USER" -g "$ZENSYNC_USER" "$DATA_DIR/bin"
 
 # Create latest.lock (flock target) if absent; it is always empty.
 if [[ ! -f "$DATA_DIR/latest.lock" ]]; then
@@ -66,13 +67,16 @@ echo "  [ok] $DATA_DIR/ tree is ready"
 
 for script in zensync-update-pointer zensync-prune; do
     src="$SCRIPT_DIR/$script"
-    dst="$BIN_DIR/$script"
     if [[ ! -f "$src" ]]; then
         echo "error: cannot find $src — run this script from the pi/ directory" >&2
         exit 1
     fi
-    install -m 755 -o root -g root "$src" "$dst"
-    echo "  [installed] $dst"
+    # Install to /usr/local/bin (system PATH — used for initial setup and manual calls)
+    install -m 755 -o root -g root "$src" "$BIN_DIR/$script"
+    echo "  [installed] $BIN_DIR/$script"
+    # Install to /var/lib/zensync/bin (owned by zensync user — updated by 'zensync upd --pi')
+    install -m 755 -o "$ZENSYNC_USER" -g "$ZENSYNC_USER" "$src" "$DATA_DIR/bin/$script"
+    echo "  [installed] $DATA_DIR/bin/$script"
 done
 
 # ── 4. Install systemd units ─────────────────────────────────────────────────

@@ -225,7 +225,7 @@ def update_latest_pointer(
         CASError:        If another client updated latest.json first.
         TransportError:  On SSH or I/O failure.
     """
-    cmd_parts = [f"zensync-update-pointer --base-dir {cfg.hub_remote_root}"]
+    cmd_parts = [f"{cfg.hub_remote_root}/bin/zensync-update-pointer --base-dir {cfg.hub_remote_root}"]
     if expected_updated_at:
         cmd_parts.append(f"--expected-updated-at {expected_updated_at}")
 
