@@ -132,20 +132,35 @@ fi
 
 # ── Install the package ───────────────────────────────────────────────────────
 echo "Installing zensync package…"
-# --user is invalid inside a virtualenv; detect and omit it.
-if python3 -c "import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)" 2>/dev/null; then
-    PIP_USER_FLAG=""
+
+# Detect the right install mode:
+#   1. Already inside a venv  → plain pip install
+#   2. Externally-managed OS Python (Debian/RPi OS) → create ~/.local/zensync-venv
+#   3. Normal user Python     → pip install --user
+VENV_DIR="$HOME/.local/zensync-venv"
+
+_in_venv() { python3 -c "import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)" 2>/dev/null; }
+_is_managed() { python3 -m pip install --dry-run pip 2>&1 | grep -q "externally-managed"; }
+
+if _in_venv; then
+    PIP="pip"
+    ZENSYNC_BIN="$(command -v zensync 2>/dev/null || echo "$VIRTUAL_ENV/bin/zensync")"
+elif _is_managed; then
+    echo "  Externally-managed Python detected — creating venv at $VENV_DIR"
+    python3 -m venv "$VENV_DIR"
+    PIP="$VENV_DIR/bin/pip"
+    ZENSYNC_BIN="$VENV_DIR/bin/zensync"
 else
-    PIP_USER_FLAG="--user"
-fi
-if [[ -f "$SCRIPT_DIR/../pyproject.toml" ]]; then
-    pip install --quiet -e "$SCRIPT_DIR/.." $PIP_USER_FLAG
-else
-    pip install --quiet zensync $PIP_USER_FLAG
+    PIP="pip"
+    ZENSYNC_BIN="$(command -v zensync 2>/dev/null || echo "$HOME/.local/bin/zensync")"
 fi
 
-# Resolve the installed binary path.
-ZENSYNC_BIN="$(command -v zensync 2>/dev/null || echo "$HOME/.local/bin/zensync")"
+if [[ -f "$SCRIPT_DIR/../pyproject.toml" ]]; then
+    $PIP install --quiet -e "$SCRIPT_DIR/.."
+else
+    $PIP install --quiet zensync
+fi
+
 echo "  [ok] zensync at $ZENSYNC_BIN"
 
 # ── Write initial config ──────────────────────────────────────────────────────
