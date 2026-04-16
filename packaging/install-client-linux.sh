@@ -132,10 +132,16 @@ fi
 
 # ── Install the package ───────────────────────────────────────────────────────
 echo "Installing zensync package…"
-if [[ -f "$SCRIPT_DIR/../pyproject.toml" ]]; then
-    pip install --quiet -e "$SCRIPT_DIR/.." --user
+# --user is invalid inside a virtualenv; detect and omit it.
+if python3 -c "import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)" 2>/dev/null; then
+    PIP_USER_FLAG=""
 else
-    pip install --quiet zensync --user
+    PIP_USER_FLAG="--user"
+fi
+if [[ -f "$SCRIPT_DIR/../pyproject.toml" ]]; then
+    pip install --quiet -e "$SCRIPT_DIR/.." $PIP_USER_FLAG
+else
+    pip install --quiet zensync $PIP_USER_FLAG
 fi
 
 # Resolve the installed binary path.
