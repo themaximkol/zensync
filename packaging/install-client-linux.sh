@@ -41,6 +41,8 @@ done
 # the real user so paths and services land in the right place.
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+REAL_UID="$(id -u "$REAL_USER")"
+REAL_RUNTIME_DIR="/run/user/$REAL_UID"
 REAL_PYTHON="$(su -c 'command -v python3' - "$REAL_USER" 2>/dev/null || echo python3)"
 
 # Run a command as the real user (no-op if we're not root).
@@ -50,6 +52,42 @@ _as_user() {
     else
         "$@"
     fi
+}
+
+_user_systemctl() {
+    if [[ "$EUID" -eq 0 && "$REAL_USER" != "root" ]]; then
+        sudo -u "$REAL_USER" env \
+            XDG_RUNTIME_DIR="$REAL_RUNTIME_DIR" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$REAL_RUNTIME_DIR/bus" \
+            systemctl --user "$@"
+    else
+        systemctl --user "$@"
+    fi
+}
+
+_enable_user_linger() {
+    if ! command -v loginctl >/dev/null 2>&1; then
+        return 1
+    fi
+
+    loginctl enable-linger "$REAL_USER" >/dev/null 2>&1
+}
+
+_prepare_user_systemd() {
+    if [[ "$EUID" -ne 0 || "$REAL_USER" == "root" ]]; then
+        return 0
+    fi
+
+    _enable_user_linger || return 1
+    systemctl start "user@${REAL_UID}.service" >/dev/null 2>&1 || true
+
+    local waited=0
+    while [[ ! -S "$REAL_RUNTIME_DIR/bus" && $waited -lt 50 ]]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+
+    [[ -S "$REAL_RUNTIME_DIR/bus" ]]
 }
 
 CONFIG_DIR="${REAL_HOME}/.config/zensync"
@@ -254,15 +292,26 @@ TimeoutStopSec=30
 WantedBy=default.target
 SERVICE
 
-_as_user systemctl --user daemon-reload
-_as_user systemctl --user enable --now zensync-agent.service
-echo "  [enabled] zensync-agent.service"
+USER_SYSTEMD_READY=0
+if _prepare_user_systemd; then
+    USER_SYSTEMD_READY=1
+    echo "  [ok] user systemd manager ready"
+else
+    echo "  [warn] could not prepare user systemd manager"
+fi
 
-# Enable linger so the service starts at boot, not just at graphical login.
-if command -v loginctl >/dev/null 2>&1; then
-    loginctl enable-linger "$REAL_USER" 2>/dev/null \
-        && echo "  [ok] linger enabled — agent will start at boot" \
-        || echo "  [warn] could not enable linger — agent starts at login only"
+if [[ $USER_SYSTEMD_READY -eq 1 ]]; then
+    _user_systemctl daemon-reload
+    _user_systemctl enable --now zensync-agent.service
+    echo "  [enabled] zensync-agent.service"
+else
+    echo "  [warn] installed unit, but could not enable it automatically"
+fi
+
+if _enable_user_linger; then
+    echo "  [ok] linger enabled — agent will start at boot"
+else
+    echo "  [warn] could not enable linger — agent starts at login only"
 fi
 
 # ── Smoke test ────────────────────────────────────────────────────────────────
@@ -272,7 +321,12 @@ _as_user "$ZENSYNC_BIN" status 2>&1 | head -5 || echo "  (profile not found — 
 
 echo ""
 echo "Checking agent status…"
-_as_user systemctl --user status zensync-agent.service --no-pager -l | head -10 || true
+if [[ $USER_SYSTEMD_READY -eq 1 ]]; then
+    _user_systemctl status zensync-agent.service --no-pager -l | head -10 || true
+else
+    echo "  [warn] user systemd not reachable during install"
+    echo "         after logging in as $REAL_USER, run: systemctl --user enable --now zensync-agent.service"
+fi
 
 # ── Post-install instructions ─────────────────────────────────────────────────
 if [[ $SETUP_HUB -eq 1 ]]; then
