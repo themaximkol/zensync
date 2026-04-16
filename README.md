@@ -139,6 +139,9 @@ zensync restore <snapshot_id>  download and apply a specific snapshot
 zensync restore --local        roll back to the most recent local backup
 zensync resolve                interactive conflict resolution
 zensync status                 show profile path, file sizes, agent state
+zensync log                    live colored agent log with session markers
+zensync upd                    update to latest version and restart agent
+zensync upd --pi               also push updated Pi scripts via SSH
 zensync agent                  run the background agent (used by autostart)
 ```
 
@@ -163,12 +166,12 @@ zensync agent                  run the background agent (used by autostart)
 ```
 IDLE ──(Zen opens)──> RUNNING ──(Zen exits + 5s grace)──> PUSHING ──> IDLE
  │                       │
- └── pull every 15 min   └── soft checkpoint every 5 min (reads backup files)
+ └── pull every 3 min    └── soft checkpoint every 5 min (reads backup files)
 ```
 
 **Push** (on clean Zen exit):
-1. Pack `zen-session.jsonlz4`, `sessionstore.jsonlz4`, `containers.json` into a
-   zstd-compressed tarball.
+1. Pack `zen-sessions.jsonlz4`, `zen-live-folders.jsonlz4`, `sessionstore.jsonlz4`,
+   `containers.json` into a zstd-compressed tarball.
 2. rsync to `tmp/<device_id>/` on the Pi, then `ssh mv` into `snapshots/<device_id>/`.
 3. Update `latest.json` atomically via `zensync-update-pointer` (flock + CAS).
 
@@ -211,7 +214,8 @@ profile_path = ""           # leave empty for auto-detection via profiles.ini
 
 [sync]
 payload = [
-  "zen-session.jsonlz4",
+  "zen-sessions.jsonlz4",
+  "zen-live-folders.jsonlz4",
   "sessionstore.jsonlz4",
   "containers.json",
 ]
@@ -221,7 +225,7 @@ optional_payload = [
   # (sidebar width, toolbar layout) that should not be shared across devices.
 ]
 soft_checkpoint_interval_seconds = 300   # 5 min
-idle_pull_interval_seconds = 900         # 15 min
+idle_pull_interval_seconds = 180         # 3 min
 post_exit_grace_seconds = 5              # wait after Zen exits before pushing
 local_backup_keep = 10                   # how many local backups to keep
 soft_promotion_after_hours = 24
@@ -255,6 +259,71 @@ ssh = "ssh"
 - Hard snapshots: keep all ≤ 30 days, thin to 1/day for days 31–90, delete beyond 90 days.
 - Soft snapshots: keep newest 5 per device.
 - The snapshot in `latest.json` is never deleted.
+
+---
+
+## Updating
+
+To pull the latest code and restart the agent on a client:
+
+```bash
+zensync upd
+```
+
+To also push updated Pi helper scripts at the same time:
+
+```bash
+zensync upd --pi
+```
+
+---
+
+## Uninstalling
+
+### Client machine (Linux)
+
+```bash
+# Stop and remove the systemd service
+systemctl --user stop zensync-agent.service
+systemctl --user disable zensync-agent.service
+rm -f ~/.config/systemd/user/zensync-agent.service
+systemctl --user daemon-reload
+
+# Remove config and local data (snapshots, state, backups)
+rm -rf ~/.config/zensync
+rm -rf ~/.local/share/zensync
+
+# Uninstall the package
+pip uninstall -y zensync
+```
+
+If you want to remove the linger setting (so no user services start at boot):
+```bash
+loginctl disable-linger "$USER"
+```
+
+### Raspberry Pi hub
+
+```bash
+# Stop and remove systemd timer/service
+sudo systemctl stop zensync-prune.timer zensync-prune.service
+sudo systemctl disable zensync-prune.timer
+sudo rm -f /etc/systemd/system/zensync-prune.timer /etc/systemd/system/zensync-prune.service
+sudo systemctl daemon-reload
+
+# Remove helper scripts
+sudo rm -f /usr/local/bin/zensync-update-pointer /usr/local/bin/zensync-prune
+
+# Remove all data (snapshots, latest.json, etc.)
+sudo rm -rf /var/lib/zensync
+
+# Remove the zensync system user
+sudo userdel zensync
+```
+
+Optionally remove the Tailscale SSH ACL rule from the
+[Tailscale policy file](https://login.tailscale.com/admin/acls) and
+remove the `tag:zensync-hub` / `tag:zensync-client` tags from your devices.
 
 ---
 
