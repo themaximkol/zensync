@@ -33,7 +33,7 @@ class Config:
     payload: list[str] = field(default_factory=lambda: list(PAYLOAD_REQUIRED))
     optional_payload: list[str] = field(default_factory=lambda: list(PAYLOAD_OPTIONAL))
     soft_checkpoint_interval_seconds: int = 300
-    idle_pull_interval_seconds: int = 900
+    idle_pull_interval_seconds: int = 180
     post_exit_grace_seconds: int = 5
     local_backup_keep: int = 10
     soft_promotion_after_hours: int = 24

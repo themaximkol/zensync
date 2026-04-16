@@ -6,6 +6,7 @@ ZenWatcher: watchdog observer that sets a dirty flag when session files change.
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from pathlib import Path
@@ -44,7 +45,7 @@ def _psutil_finds_zen() -> bool:
             try:
                 proc_name = (proc.info.get("name") or "").lower()
                 proc_exe = Path(proc.info.get("exe") or "").name.lower()
-                if any(n in proc_name or n in proc_exe for n in names):
+                if proc_name in names or proc_exe in names:
                     return True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
@@ -53,22 +54,59 @@ def _psutil_finds_zen() -> bool:
     return False
 
 
+def _lockfile_pid(profile: ZenProfile) -> Optional[int]:
+    """
+    Parse the PID encoded in Firefox's lock symlink target.
+
+    Firefox on Linux creates the lock file as a symlink whose target is
+    ``<ip>:+<pid>`` (e.g. ``127.0.1.1:+12345``).  Returns the PID as an int,
+    or None if the lockfile is absent, not a symlink, or has an unexpected format.
+    """
+    lf = profile.lockfile
+    if not lf.is_symlink():
+        return None
+    try:
+        target = lf.readlink() if hasattr(lf, "readlink") else Path(os.readlink(str(lf)))
+        # target is a Path; convert to string for parsing
+        target_str = str(target)
+        # Expected format: "host:+PID" or "ip:+PID"
+        if ":" in target_str and ":+" in target_str:
+            pid_str = target_str.split(":+", 1)[1]
+            return int(pid_str)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def is_zen_running(profile: ZenProfile) -> bool:
     """
     Return True if Zen Browser appears to be running.
 
-    Primary check: profile lockfile (fastest; Firefox-family browsers create and
-    remove this atomically around their session).  Secondary cross-check: psutil
-    process scan (catches the race window where the lockfile was removed but the
-    process hasn't fully disappeared from the OS process table yet).
-
-    Note: a stale lockfile from a crash will cause a false positive until the
-    file is removed.  In that case psutil returns False, but the lockfile check
-    keeps the result True — this is intentional (conservative: never push to a
-    profile that might be in mid-write).
+    Uses two signals combined:
+    1. Profile lockfile: Firefox creates ``lock`` as a symlink encoding the PID.
+       We parse the PID and verify it belongs to a Zen process.  A symlink whose
+       PID is gone or belongs to something else is treated as stale.
+    2. psutil process scan: catches the brief race window after the lockfile is
+       removed but before the process fully exits.
     """
-    if profile.lockfile.exists() or profile.lockfile.is_symlink():
+    pid = _lockfile_pid(profile)
+    if pid is not None:
+        # Verify the encoded PID is actually a live Zen process.
+        names = _platform_names()
+        try:
+            proc = psutil.Process(pid)
+            proc_name = (proc.name() or "").lower()
+            proc_exe = Path(proc.exe() or "").name.lower()
+            if proc_name in names or proc_exe in names:
+                return True
+            # PID exists but is not Zen — stale lockfile, fall through.
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass  # PID gone — stale lockfile, fall through.
+    elif profile.lockfile.exists():
+        # Windows uses parent.lock (a regular file, not a symlink).
+        # Treat its presence conservatively as Zen running.
         return True
+
     return _psutil_finds_zen()
 
 
