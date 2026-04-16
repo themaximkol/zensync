@@ -28,27 +28,26 @@ Zen Browser must be installed. ZenSync does not install it.
 
 ## Quick start
 
-### 1 — Set up the Pi hub (once)
+### 1 — Raspberry Pi hub + client (one command)
+
+On the Pi itself, clone the repo and run the unified installer with `--setup-hub`:
 
 ```bash
 git clone <this-repo> zensync
-cd zensync/pi
-sudo bash install-pi.sh
+cd zensync
+sudo bash packaging/install-client-linux.sh --hub localhost --device raspberrypi --setup-hub
 ```
 
-The script:
-- Creates a `zensync` system user
-- Creates `/var/lib/zensync/{snapshots/,tmp/,latest.lock}`
-- Installs `zensync-update-pointer` and `zensync-prune` to `/usr/local/bin/`
-- Enables a daily `zensync-prune.timer` (runs at 03:00)
-- Prints two snippets you need to act on (see below)
+`--setup-hub` creates the `zensync` system user, `/var/lib/zensync/` tree, helper
+scripts, and daily prune timer — everything the Pi needs as a hub. The client agent
+and `~/.config/zensync/client.toml` are also written for the Pi's own Zen Browser
+session (if it runs one).
 
-**Tag devices in Tailscale admin → Machines:**
-- This Pi → `tag:zensync-hub`
-- Every client → `tag:zensync-client`
+**Then tag devices in Tailscale admin → Machines:**
+- This Pi → `tag:zensync-hub`  (and `tag:zensync-client` if Zen runs here too)
+- Every other client → `tag:zensync-client`
 
-**Paste the SSH ACL** printed by the installer into your
-[Tailscale policy file](https://login.tailscale.com/admin/acls):
+**Paste the SSH ACL** into your [Tailscale policy file](https://login.tailscale.com/admin/acls):
 
 ```jsonc
 "ssh": [
@@ -69,26 +68,14 @@ ssh zensync@<pi-tailscale-hostname> echo ok
 
 ---
 
-### 2 — Install on Linux / Raspberry Pi clients
+### 2 — Install on Linux clients
 
 ```bash
-bash packaging/install-client-linux.sh --hub <pi-tailscale-hostname>
+bash packaging/install-client-linux.sh --hub <pi-tailscale-hostname> --device <machine-name>
 ```
 
-Or manually:
-
-```bash
-pip install -e ".[dev]"
-mkdir -p ~/.config/zensync
-```
-
-Then write `~/.config/zensync/client.toml` (see [Configuration](#configuration)).
-
-The installer enables a systemd user service that starts the agent at login:
-
-```bash
-systemctl --user status zensync-agent
-```
+This installs the package, writes `~/.config/zensync/client.toml`, accepts the
+Pi's SSH host key, and enables the systemd user service (starts at login and boot).
 
 ---
 
@@ -302,24 +289,26 @@ If you want to remove the linger setting (so no user services start at boot):
 loginctl disable-linger "$USER"
 ```
 
-### Raspberry Pi hub
+### Raspberry Pi hub (run these as root / with sudo)
 
 ```bash
-# Stop and remove systemd timer/service
+# Stop and remove the prune timer
 sudo systemctl stop zensync-prune.timer zensync-prune.service
 sudo systemctl disable zensync-prune.timer
-sudo rm -f /etc/systemd/system/zensync-prune.timer /etc/systemd/system/zensync-prune.service
+sudo rm -f /etc/systemd/system/zensync-prune.{timer,service}
 sudo systemctl daemon-reload
 
 # Remove helper scripts
 sudo rm -f /usr/local/bin/zensync-update-pointer /usr/local/bin/zensync-prune
 
-# Remove all data (snapshots, latest.json, etc.)
+# Remove all hub data (snapshots, latest.json, etc.)
 sudo rm -rf /var/lib/zensync
 
 # Remove the zensync system user
 sudo userdel zensync
 ```
+
+If the Pi also runs the client agent, run the client uninstall steps above as well.
 
 Optionally remove the Tailscale SSH ACL rule from the
 [Tailscale policy file](https://login.tailscale.com/admin/acls) and
