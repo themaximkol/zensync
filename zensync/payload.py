@@ -101,6 +101,7 @@ def pack(
     kind: str = "hard",
     parent_id: Optional[str] = None,
     names: Optional[list[str]] = None,
+    hostname: Optional[str] = None,
 ) -> tuple[Path, Manifest]:
     """
     Pack existing payload files into a .tar.zst snapshot.
@@ -148,7 +149,7 @@ def pack(
     manifest = Manifest(
         snapshot_id=snapshot_id,
         device_id=device_id,
-        hostname=socket.gethostname(),
+        hostname=hostname or socket.gethostname(),
         kind=kind,
         parent_id=parent_id,
         content_hash=content_hash,

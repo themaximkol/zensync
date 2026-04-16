@@ -318,6 +318,7 @@ def push(
             kind=kind,
             parent_id=state.last_pulled_snapshot_id,
             names=cfg.payload if kind == "hard" else list(_SOFT_PAYLOAD),
+            hostname=cfg.device_name or None,
         )
         manifest_path = tmp / f"{manifest.snapshot_id}.json"
 

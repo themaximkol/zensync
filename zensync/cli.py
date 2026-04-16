@@ -120,6 +120,7 @@ def _cmd_push(args: argparse.Namespace) -> int:
                     kind="hard",
                     parent_id=state.last_pushed_snapshot_id,
                     names=cfg.payload,
+                    hostname=cfg.device_name or None,
                 )
             except ValueError as exc:
                 print(f"error: {exc}", file=sys.stderr)
@@ -188,7 +189,7 @@ def _cmd_pull(args: argparse.Namespace) -> int:
     state = State.load()
     print("Checking hub for new snapshots…")
     try:
-        manifest = pull(cfg, profile, state, conflict_policy=cfg.conflict_policy)
+        manifest = pull(cfg, profile, state, conflict_policy="prefer-remote")
     except TransportError as exc:
         print(f"error: pull failed: {exc}", file=sys.stderr)
         return 1
@@ -409,15 +410,15 @@ def _cmd_history(args: argparse.Namespace) -> int:
         return 0
 
     col = 36
-    print(f"  {'Snapshot ID':<{col}}  {'Kind':5}  {'Device':8}  Size")
-    print(f"  {'-'*col}  {'-----'}  {'--------'}  ----")
+    print(f"  {'Snapshot ID':<{col}}  {'Kind':5}  {'Device':<16}  Size")
+    print(f"  {'-'*col}  {'-----'}  {'-'*16}  ----")
     for m in reversed(manifests):
         sid = m.get("snapshot_id", "?")
         kind = m.get("kind", "?")
-        dev = m.get("device_id", "?")[:8]
+        dev = m.get("hostname") or m.get("device_id", "?")[:8]
         size = _fmt_size(m.get("size_bytes", 0))
         marker = " ←" if m.get("snapshot_id") == state.last_pulled_snapshot_id else ""
-        print(f"  {sid:<{col}}  {kind:5}  {dev:8}  {size}{marker}")
+        print(f"  {sid:<{col}}  {kind:5}  {dev:<16}  {size}{marker}")
 
     return 0
 
