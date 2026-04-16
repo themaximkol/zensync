@@ -5,6 +5,8 @@ __pycache__/
 dist/
 build/
 .eggs/
+*.egg
+MANIFEST
 
 # Virtual environments
 .venv/
@@ -13,10 +15,8 @@ env/
 
 # pytest
 .pytest_cache/
-
-# Distribution / packaging
-*.egg
-MANIFEST
+.coverage
+htmlcov/
 
 # Editor
 .idea/
@@ -27,3 +27,22 @@ MANIFEST
 # OS
 .DS_Store
 Thumbs.db
+
+# zensync runtime artifacts (snapshots, staging, local state)
+*.tar.zst
+*.tar.zst.tmp
+
+# Profile-side temporary directories written during apply
+.zensync-incoming/
+.zensync-backup/
+.zensync.lock
+
+# Local agent state and config (user-specific, not for version control)
+state.json
+client.toml
+
+# Outbox (queued pushes when hub is unreachable)
+outbox/
+
+# Pending conflicts awaiting resolution
+pending/

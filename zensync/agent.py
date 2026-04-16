@@ -1,12 +1,17 @@
 """
-Long-running zensync agent.
+Long-running zensync agent — asyncio event loop.
 
-Phase 3: state machine + watcher.
-Logs IDLE / RUNNING / PUSHING transitions with the configured grace period.
-No network I/O yet (transport wired in Phase 5).
+Phases covered:
+  3: state machine + watcher (IDLE/RUNNING/PUSHING transitions + logging)
+  6: hard push on clean exit, periodic idle pull
+  7: soft checkpoint while RUNNING + soft-to-hard promotion
+
+The loop polls every _POLL_SECONDS.  Transport calls (rsync/ssh) run in a
+thread pool via asyncio.to_thread so they never block the event loop.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -17,23 +22,131 @@ from zensync.profile import ProfileNotFoundError, discover
 from zensync.state import AgentPhase, AgentStateMachine, State
 from zensync.watcher import ZenWatcher, is_zen_running
 
-_POLL_SECONDS = 1.0  # process-detection poll interval
+_POLL_SECONDS = 1.0
 
 
-def run(
-    profile_path: Optional[Path] = None,
-    config: Optional[Config] = None,
-) -> None:
-    """Run the agent loop until interrupted (KeyboardInterrupt / SIGINT)."""
+def _setup_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(levelname)-7s  %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
-    log = logging.getLogger("zensync.agent")
 
-    cfg = config or load_config()
 
+# ---------------------------------------------------------------------------
+# Transport helpers (called via asyncio.to_thread to stay non-blocking)
+# ---------------------------------------------------------------------------
+
+def _do_hard_push(cfg: Config, profile, state: State, log: logging.Logger) -> Optional[object]:
+    """Pack + upload + CAS pointer update.  Returns Manifest or None."""
+    from zensync.transport import TransportError, push
+    try:
+        manifest = push(cfg, profile, state, kind="hard")
+        if manifest:
+            state.last_pushed_snapshot_id = manifest.snapshot_id
+            state.last_local_hash = manifest.content_hash
+            state.save()
+        return manifest
+    except TransportError as exc:
+        log.error("Push failed: %s", exc)
+        return None
+
+
+def _do_pull(cfg: Config, profile, state: State, log: logging.Logger) -> Optional[object]:
+    """Check latest + download + apply.  Returns Manifest or None."""
+    from zensync.transport import TransportError, pull
+    try:
+        manifest = pull(cfg, profile, state, conflict_policy=cfg.conflict_policy)
+        if manifest:
+            state.save()
+        return manifest
+    except TransportError as exc:
+        log.warning("Pull failed (hub unreachable?): %s", exc)
+        return None
+
+
+def _do_soft_push(cfg: Config, profile, state: State, log: logging.Logger) -> Optional[object]:
+    """Pack backup files + upload as kind=soft.  Returns Manifest or None."""
+    from zensync.transport import TransportError, push_soft
+    try:
+        return push_soft(cfg, profile, state)
+    except TransportError as exc:
+        log.warning("Soft checkpoint failed: %s", exc)
+        return None
+
+
+def _maybe_promote_soft(cfg: Config, state: State, log: logging.Logger) -> None:
+    """
+    Promote the newest soft snapshot to hard if the last hard push is older
+    than soft_promotion_after_hours.  Runs once on IDLE entry.
+    """
+    from zensync.transport import TransportError, list_manifests, update_latest_pointer
+    from datetime import datetime, timezone, timedelta
+
+    if not state.last_pushed_snapshot_id:
+        return
+
+    # Parse the last hard push timestamp from snapshot_id.
+    try:
+        ts_part = state.last_pushed_snapshot_id.rsplit("-", 1)[0]
+        last_hard_dt = datetime.strptime(ts_part, "%Y-%m-%dT%H%M%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except Exception:
+        return
+
+    age = datetime.now(tz=timezone.utc) - last_hard_dt
+    if age < timedelta(hours=cfg.soft_promotion_after_hours):
+        return
+
+    # Look for newer soft snapshots from this device.
+    try:
+        manifests = list_manifests(cfg, device_id=state.device_id)
+    except TransportError:
+        return
+
+    soft_newer = [
+        m for m in manifests
+        if m.get("kind") == "soft"
+        and m.get("snapshot_id", "") > state.last_pushed_snapshot_id
+    ]
+    if not soft_newer:
+        return
+
+    newest_soft = max(soft_newer, key=lambda m: m["snapshot_id"])
+    new_pointer = {
+        "snapshot_id": newest_soft["snapshot_id"],
+        "device_id": newest_soft["device_id"],
+        "kind": "hard",
+        "content_hash": newest_soft["content_hash"],
+        "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+    try:
+        current = None
+        from zensync.transport import read_latest
+        current = read_latest(cfg)
+        expected = (current or {}).get("updated_at", "")
+        update_latest_pointer(cfg, new_pointer, expected_updated_at=expected)
+        state.last_pushed_snapshot_id = newest_soft["snapshot_id"]
+        state.save()
+        log.info(
+            "Promoted soft → hard: %s (last hard was %.0f h ago)",
+            newest_soft["snapshot_id"],
+            age.total_seconds() / 3600,
+        )
+    except TransportError as exc:
+        log.warning("Soft promotion failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Main agent loop
+# ---------------------------------------------------------------------------
+
+async def _run_async(
+    profile_path: Optional[Path],
+    cfg: Config,
+    log: logging.Logger,
+) -> None:
     try:
         profile = discover(profile_path=profile_path)
     except ProfileNotFoundError as exc:
@@ -44,49 +157,80 @@ def run(
     log.info("Device  : %s", state.device_id)
     log.info("Profile : %s", profile.root)
     log.info(
-        "Config  : grace=%.0fs  poll=%.0fs",
+        "Config  : grace=%.0fs  idle_pull=%.0fs  soft_ckpt=%.0fs",
         cfg.post_exit_grace_seconds,
-        _POLL_SECONDS,
+        cfg.idle_pull_interval_seconds,
+        cfg.soft_checkpoint_interval_seconds,
     )
 
     sm = AgentStateMachine(
         post_exit_grace_seconds=cfg.post_exit_grace_seconds,
-        logger=logging.getLogger("zensync.agent"),
+        logger=log,
     )
 
+    _last_pull: float = 0.0
+    _last_soft: float = 0.0
+
     with ZenWatcher(profile) as watcher:
-        log.info("Watcher started. Monitoring %s", profile.root)
-        log.info("Initial state: %s", sm.phase.value)
+        log.info("Agent started. State: %s", sm.phase.value)
 
-        try:
-            while True:
-                running = is_zen_running(profile)
+        while True:
+            now = time.monotonic()
+            running = await asyncio.to_thread(is_zen_running, profile)
 
-                if sm.phase == AgentPhase.IDLE and running:
-                    sm.on_zen_started()
+            # ── State machine transitions ──────────────────────────────────
+            if sm.phase == AgentPhase.IDLE and running:
+                sm.on_zen_started()
 
-                elif sm.phase == AgentPhase.RUNNING:
-                    if not running:
-                        sm.on_zen_stopped()
-                    elif watcher.consume_dirty():
-                        # Zen is running and session files changed — soft
-                        # checkpoint opportunity (network push wired in Phase 7).
-                        log.info(
-                            "Payload changed while RUNNING "
-                            "(soft checkpoint — no-op in Phase 3)"
-                        )
+            elif sm.phase == AgentPhase.RUNNING:
+                if not running:
+                    sm.on_zen_stopped()
 
-                if sm.tick():
-                    # Grace period elapsed: transition RUNNING → PUSHING.
-                    watcher.consume_dirty()  # discard stale dirty flag
-                    log.info(
-                        "PUSHING: packing snapshot "
-                        "(no network I/O in Phase 3)"
+            # ── PUSHING: pack + push ───────────────────────────────────────
+            if sm.tick():
+                watcher.consume_dirty()
+                log.info("PUSHING: packing snapshot…")
+                manifest = await asyncio.to_thread(
+                    _do_hard_push, cfg, profile, state, log
+                )
+                if manifest:
+                    log.info("Pushed  : %s", manifest.snapshot_id)
+                sm.push_done()
+                # Check soft promotion after returning to IDLE.
+                await asyncio.to_thread(_maybe_promote_soft, cfg, state, log)
+
+            # ── IDLE: periodic pull ────────────────────────────────────────
+            if (
+                sm.phase == AgentPhase.IDLE
+                and now - _last_pull >= cfg.idle_pull_interval_seconds
+            ):
+                manifest = await asyncio.to_thread(_do_pull, cfg, profile, state, log)
+                if manifest:
+                    log.info("Pulled  : %s", manifest.snapshot_id)
+                _last_pull = time.monotonic()
+
+            # ── RUNNING: soft checkpoint ───────────────────────────────────
+            if sm.phase == AgentPhase.RUNNING and watcher.consume_dirty():
+                if now - _last_soft >= cfg.soft_checkpoint_interval_seconds:
+                    manifest = await asyncio.to_thread(
+                        _do_soft_push, cfg, profile, state, log
                     )
-                    # Phase 5 will call transport.push() here.
-                    sm.push_done()
+                    if manifest:
+                        log.info("Soft ckpt: %s", manifest.snapshot_id)
+                    _last_soft = time.monotonic()
 
-                time.sleep(_POLL_SECONDS)
+            await asyncio.sleep(_POLL_SECONDS)
 
-        except KeyboardInterrupt:
-            log.info("Agent stopped.")
+
+def run(
+    profile_path: Optional[Path] = None,
+    config: Optional[Config] = None,
+) -> None:
+    """Run the agent loop until interrupted (KeyboardInterrupt / SIGINT)."""
+    _setup_logging()
+    log = logging.getLogger("zensync.agent")
+    cfg = config or load_config()
+    try:
+        asyncio.run(_run_async(profile_path, cfg, log))
+    except KeyboardInterrupt:
+        log.info("Agent stopped.")

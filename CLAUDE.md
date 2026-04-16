@@ -80,7 +80,7 @@ The actual profile folder name is read from `profiles.ini` in the parent directo
 | `sessionstore-backups/recovery.jsonlz4` | Live, frequently-updated copy of session state | Read-only source for "checkpoint while running" mode. |
 | `containers.json` | Multi-Account Container definitions (name, color, icon) | Small JSON. Sync as-is. |
 | `zen-themes.json` | Installed Zen themes | Optional; include behind a config flag. |
-| `xulstore.json` | UI layout (sidebar width, toolbar) | Optional; include behind a config flag. |
+| `xulstore.json` | UI layout (sidebar width, toolbar) | **Not synced.** Per-device state — each device keeps its own sidebar width and toolbar layout. |
 
 **Files we explicitly do NOT sync**
 - `places.sqlite`, `favicons.sqlite`, `cookies.sqlite`, `formhistory.sqlite`, `webappsstore.sqlite`, `key4.db`, `logins.json`, `cert9.db`, `storage/`, `cache2/`, `extension-store/`, `datareporting/`, `crashes/`.
@@ -395,7 +395,7 @@ payload = [
 ]
 optional_payload = [
   "zen-themes.json",
-  "xulstore.json",
+  # xulstore.json is not listed — per-device UI state, intentionally unsynced
 ]
 soft_checkpoint_interval_seconds = 300
 idle_pull_interval_seconds = 900

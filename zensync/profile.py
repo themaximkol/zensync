@@ -21,10 +21,11 @@ PAYLOAD_REQUIRED: tuple[str, ...] = (
     "containers.json",
 )
 
-# Files included only when opted in via config (zen.optional_payload)
+# Files included only when opted in via config (zen.optional_payload).
+# xulstore.json is intentionally excluded — it stores per-device UI state
+# (sidebar width, toolbar layout) that should not be shared across devices.
 PAYLOAD_OPTIONAL: tuple[str, ...] = (
     "zen-themes.json",
-    "xulstore.json",
 )
 
 # Directories tracked for informational purposes in `status`

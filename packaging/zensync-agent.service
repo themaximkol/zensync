@@ -1,0 +1,18 @@
+[Unit]
+Description=ZenSync browser-sync agent
+Documentation=https://github.com/your-org/zensync
+# Start after the network and user graphical session are available.
+After=network-online.target graphical-session.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as the logged-in user (systemd --user unit).
+ExecStart=%h/.local/bin/zensync agent
+Restart=on-failure
+RestartSec=10
+# Give the agent time to finish a push on shutdown.
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

@@ -1,2 +1,288 @@
-# zensync
-Script to enable syncing of Opened Tabs, Workspaces and Essentials in Zen Browser accross diferent devices 
+# ZenSync
+
+Self-hosted sync for [Zen Browser](https://zen-browser.app) — tabs, workspaces,
+essentials, pinned tabs, folders, and container definitions — across Windows,
+Ubuntu, and Raspberry Pi OS.
+
+A Raspberry Pi 5 acts as the storage hub. A lightweight Python agent runs on
+each client device and syncs automatically: push on clean Zen exit, soft
+checkpoint every 5 min while running, pull every 15 min while idle.
+
+Transport is `rsync` over Tailscale SSH. No application server. No custom
+protocol. The entire "server" is two ~100-line Python scripts.
+
+---
+
+## Requirements
+
+| Component | Version |
+|---|---|
+| Python | 3.11+ |
+| rsync | any recent (ships with Linux; Git for Windows on Windows) |
+| ssh | OpenSSH (ships with Linux; Git for Windows / OpenSSH optional feature on Windows) |
+| Tailscale | installed and connected on every device |
+
+Zen Browser must be installed. ZenSync does not install it.
+
+---
+
+## Quick start
+
+### 1 — Set up the Pi hub (once)
+
+```bash
+git clone <this-repo> zensync
+cd zensync/pi
+sudo bash install-pi.sh
+```
+
+The script:
+- Creates a `zensync` system user
+- Creates `/var/lib/zensync/{snapshots/,tmp/,latest.lock}`
+- Installs `zensync-update-pointer` and `zensync-prune` to `/usr/local/bin/`
+- Enables a daily `zensync-prune.timer` (runs at 03:00)
+- Prints two snippets you need to act on (see below)
+
+**Tag devices in Tailscale admin → Machines:**
+- This Pi → `tag:zensync-hub`
+- Every client → `tag:zensync-client`
+
+**Paste the SSH ACL** printed by the installer into your
+[Tailscale policy file](https://login.tailscale.com/admin/acls):
+
+```jsonc
+"ssh": [
+  {
+    "action": "accept",
+    "src":    ["tag:zensync-client"],
+    "dst":    ["tag:zensync-hub"],
+    "users":  ["zensync"]
+  }
+]
+```
+
+**Verify** from any client over Tailscale:
+```bash
+ssh zensync@<pi-tailscale-hostname> echo ok
+# → ok
+```
+
+---
+
+### 2 — Install on Linux / Raspberry Pi clients
+
+```bash
+bash packaging/install-client-linux.sh --hub <pi-tailscale-hostname>
+```
+
+Or manually:
+
+```bash
+pip install -e ".[dev]"
+mkdir -p ~/.config/zensync
+```
+
+Then write `~/.config/zensync/client.toml` (see [Configuration](#configuration)).
+
+The installer enables a systemd user service that starts the agent at login:
+
+```bash
+systemctl --user status zensync-agent
+```
+
+---
+
+### 3 — Install on Windows
+
+In PowerShell (normal user, not admin):
+
+```powershell
+.\packaging\install-client-windows.ps1 -HubHost <pi-tailscale-hostname>
+```
+
+Requirements: Python 3.11+ and [Git for Windows](https://git-scm.com) (which
+bundles `rsync.exe` and `ssh.exe`). The script detects them automatically.
+
+Config lives at `%APPDATA%\zensync\client.toml`.
+
+The agent is registered as a Scheduled Task that starts at logon.
+
+---
+
+### 4 — Verify
+
+Run these on each client after installation:
+
+```bash
+zensync status          # profile discovered, payload files listed
+zensync push --dry-run  # pack snapshot, print manifest, discard (no network)
+zensync push            # real push — Pi must be reachable
+ssh zensync@<pi> cat /var/lib/zensync/latest.json  # confirm it landed
+zensync pull            # pull on another device
+zensync agent           # run agent interactively (Ctrl-C to stop)
+```
+
+---
+
+## Daily use
+
+Use `zensync launch` as your Zen Browser shortcut. It pulls the latest snapshot
+before opening Zen so your tabs are always current.
+
+```
+zensync launch [-- zen-args]   pull then open Zen Browser
+zensync push                   force a push (Zen must not be running)
+zensync pull                   force a pull (Zen must not be running)
+zensync diff                   show which files changed since last sync
+zensync history                list recent snapshots from the hub
+zensync restore <snapshot_id>  download and apply a specific snapshot
+zensync restore --local        roll back to the most recent local backup
+zensync resolve                interactive conflict resolution
+zensync status                 show profile path, file sizes, agent state
+zensync agent                  run the background agent (used by autostart)
+```
+
+---
+
+## How it works
+
+```
++---------------------+                        +-------------------------+
+|  Ubuntu desktop     |                        |                         |
+|  zensync agent      | -- rsync/ssh/Tailscale |   Raspberry Pi 5        |
++---------------------+        -->             |   /var/lib/zensync/     |
+                                               |                         |
++---------------------+        -->             |   latest.json  (CAS)    |
+|  Windows laptop     |                        |   snapshots/<device>/   |
+|  zensync agent      |                        |   tmp/<device>/         |
++---------------------+                        +-------------------------+
+```
+
+**Agent state machine** (per device):
+
+```
+IDLE ──(Zen opens)──> RUNNING ──(Zen exits + 5s grace)──> PUSHING ──> IDLE
+ │                       │
+ └── pull every 15 min   └── soft checkpoint every 5 min (reads backup files)
+```
+
+**Push** (on clean Zen exit):
+1. Pack `zen-session.jsonlz4`, `sessionstore.jsonlz4`, `containers.json` into a
+   zstd-compressed tarball.
+2. rsync to `tmp/<device_id>/` on the Pi, then `ssh mv` into `snapshots/<device_id>/`.
+3. Update `latest.json` atomically via `zensync-update-pointer` (flock + CAS).
+
+**Pull** (before Zen starts / every 15 min while idle):
+1. `ssh cat latest.json` — if hash matches local state, do nothing.
+2. rsync the snapshot tarball.
+3. Verify integrity, apply atomically via `os.replace()`.
+
+**Soft checkpoints** (while Zen is running, every 5 min if files changed):
+- Pack `sessionstore-backups/recovery.jsonlz4` (live Firefox backup, safe to read
+  while running) + `containers.json`.
+- Upload as `kind=soft` — does **not** update `latest.json`.
+- Covers the "forgot to close Zen before leaving" case. Promoted to hard after
+  24 h of no clean exit.
+
+**Conflicts** (two devices both modified tabs):
+- CAS on `latest.json` serialises concurrent pushes; the loser is preserved in
+  `snapshots/<device_id>/` and recoverable via `zensync history` + `zensync restore`.
+- Pull-time conflict (local changes + remote newer snapshot): deferred to
+  `pending/` directory; resolved with `zensync resolve`.
+
+---
+
+## Configuration
+
+`~/.config/zensync/client.toml` on Linux, `%APPDATA%\zensync\client.toml` on Windows.
+
+```toml
+[hub]
+host = "raspberrypi"        # Tailscale MagicDNS hostname of the Pi
+user = "zensync"
+remote_root = "/var/lib/zensync"
+
+[device]
+id = "auto"                 # auto-generated UUID on first run
+name = "thinkpad-x1"        # human label shown in zensync history
+
+[zen]
+profile_path = ""           # leave empty for auto-detection via profiles.ini
+
+[sync]
+payload = [
+  "zen-session.jsonlz4",
+  "sessionstore.jsonlz4",
+  "containers.json",
+]
+optional_payload = [
+  "zen-themes.json",
+  # xulstore.json is intentionally excluded — it stores per-device UI state
+  # (sidebar width, toolbar layout) that should not be shared across devices.
+]
+soft_checkpoint_interval_seconds = 300   # 5 min
+idle_pull_interval_seconds = 900         # 15 min
+post_exit_grace_seconds = 5              # wait after Zen exits before pushing
+local_backup_keep = 10                   # how many local backups to keep
+soft_promotion_after_hours = 24
+
+[conflict]
+policy = "prompt"           # prompt | prefer-remote | prefer-local
+
+[tools]
+# Override if rsync/ssh aren't on PATH (needed on Windows without Git for Windows)
+rsync = "rsync"
+ssh = "ssh"
+```
+
+---
+
+## Storage layout on the Pi
+
+```
+/var/lib/zensync/
+├── latest.json                            ← canonical pointer (CAS-updated)
+├── latest.lock                            ← flock target for atomic updates
+├── snapshots/
+│   └── <device_id>/
+│       ├── 2026-04-14T093122Z-a1b2c3d4.tar.zst
+│       └── 2026-04-14T093122Z-a1b2c3d4.json
+└── tmp/
+    └── <device_id>/                       ← rsync upload staging
+```
+
+**Retention** (daily prune at 03:00):
+- Hard snapshots: keep all ≤ 30 days, thin to 1/day for days 31–90, delete beyond 90 days.
+- Soft snapshots: keep newest 5 per device.
+- The snapshot in `latest.json` is never deleted.
+
+---
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+python -m pytest              # 132 tests (1 Windows-only skip on Linux)
+python -m pytest -k transport # just transport tests
+zensync status                # live profile discovery
+zensync push --dry-run        # pack + print manifest, no network
+```
+
+### rsync on Windows
+
+Install [Git for Windows](https://git-scm.com/download/win). The install script
+detects `C:\Program Files\Git\usr\bin\rsync.exe` automatically. Alternatives
+(MSYS2, cwRsync) work but require setting `[tools] rsync` manually in
+`client.toml`.
+
+---
+
+## Security
+
+- **Transport**: WireGuard (Tailscale) end-to-end. No public port.
+- **Auth**: Tailscale SSH — device identity is the credential. Remove a lost device
+  from the tailnet to revoke access immediately.
+- **At-rest on Pi**: snapshots are unencrypted and contain tab URLs. Keep
+  `/var/lib/zensync` as `0700 zensync:zensync` (the installer does this).
+- **At-rest on clients**: backup files live inside the user profile directory,
+  protected by OS file permissions.
