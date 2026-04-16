@@ -183,8 +183,7 @@ def _cmd_pull(args: argparse.Namespace) -> int:
         return 1
 
     if is_zen_running(profile):
-        print("error: Zen Browser is running — stop it before pulling.", file=sys.stderr)
-        return 1
+        print("Warning: Zen Browser is running — applying snapshot may affect the active session.")
 
     state = State.load()
     print("Checking hub for new snapshots…")

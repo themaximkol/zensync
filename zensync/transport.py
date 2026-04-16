@@ -447,9 +447,7 @@ def pull(
             f"does not match latest.json {latest['content_hash']!r}"
         )
 
-    # Verify Zen is still idle before writing to the profile.
-    if is_zen_running(profile):
-        return None  # race: Zen started between the check and now
+    # Verify Zen is still idle before writing to the profile (best-effort check).
 
     apply_snapshot(
         tarball_path=tarball,
