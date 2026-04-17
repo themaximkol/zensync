@@ -4,6 +4,8 @@ Returns a Config dataclass with defaults when the file is absent.
 """
 from __future__ import annotations
 
+import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,7 +14,15 @@ from platformdirs import user_config_dir
 
 from zensync.profile import PAYLOAD_OPTIONAL, PAYLOAD_REQUIRED
 
-DEFAULT_CONFIG_PATH = Path(user_config_dir("zensync", roaming=True)) / "client.toml"
+
+def _default_config_dir() -> Path:
+    # On Windows use %APPDATA% directly so it matches the install script.
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "zensync"
+    return Path(user_config_dir("zensync"))
+
+
+DEFAULT_CONFIG_PATH = _default_config_dir() / "client.toml"
 
 
 @dataclass
