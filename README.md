@@ -96,15 +96,6 @@ In PowerShell (normal user, not admin):
 > powershell -ExecutionPolicy Bypass -File .\packaging\install-client-windows.ps1 -HubHost <pi-tailscale-hostname>
 > ```
 
-> **Script blocked?** Windows disables unsigned scripts by default. Fix it once with:
-> ```powershell
-> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-> ```
-> Or bypass for a single run without changing policy:
-> ```powershell
-> powershell -ExecutionPolicy Bypass -File .\packaging\install-client-windows.ps1 -HubHost raspberrypi
-> ```
-
 Requirements: Python 3.11+ and [Git for Windows](https://git-scm.com) (which
 bundles `rsync.exe` and `ssh.exe`). The script detects them automatically.
 
