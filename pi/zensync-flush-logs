@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""
+zensync-flush-logs — merge RAM hub log buffer to persistent storage.
+
+Run by zensync-flush-logs.service on shutdown/reboot so hub logs are
+written to SD card exactly once per session rather than on every event.
+
+RAM buffer : /dev/shm/zensync-logs/<device_id>.jsonl
+Persistent : /var/lib/zensync/logs/<device_id>.jsonl
+"""
+import os
+import sys
+from pathlib import Path
+
+RAM_DIR  = Path("/dev/shm/zensync-logs")
+DISK_DIR = Path("/var/lib/zensync/logs")
+
+
+def main() -> int:
+    if not RAM_DIR.is_dir():
+        return 0  # nothing to flush
+
+    DISK_DIR.mkdir(parents=True, exist_ok=True)
+    flushed = 0
+
+    for src in sorted(RAM_DIR.glob("*.jsonl")):
+        dst = DISK_DIR / src.name
+        try:
+            data = src.read_bytes()
+            if not data:
+                continue
+            with dst.open("ab") as f:
+                f.write(data)
+            src.unlink()
+            flushed += 1
+        except OSError as exc:
+            print(f"zensync-flush-logs: warning: {src.name}: {exc}", file=sys.stderr)
+
+    if flushed:
+        print(f"zensync-flush-logs: flushed {flushed} log file(s) to {DISK_DIR}")
+
+    # Remove RAM dir if empty.
+    try:
+        RAM_DIR.rmdir()
+    except OSError:
+        pass
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

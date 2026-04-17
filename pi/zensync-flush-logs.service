@@ -1,0 +1,17 @@
+[Unit]
+Description=Flush ZenSync hub logs from RAM to persistent storage
+# Run ExecStop on shutdown/reboot before filesystems are unmounted.
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=zensync
+# ExecStart is a no-op; the real work happens in ExecStop at shutdown.
+ExecStart=/bin/true
+ExecStop=/usr/local/bin/zensync-flush-logs
+
+[Install]
+WantedBy=multi-user.target
