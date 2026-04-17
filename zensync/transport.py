@@ -123,6 +123,29 @@ def _run_strict(cmd: list[str], input: Optional[str] = None, timeout: int = 120)
     return result
 
 
+def _run_copy_with_fallback(
+    primary_cmd: list[str],
+    fallback_cmd: list[str],
+    timeout: int = 120,
+) -> None:
+    """
+    Run a file-copy command, retrying with a fallback tool only when the
+    primary executable is missing from disk/PATH.
+    """
+    try:
+        _run_strict(primary_cmd, timeout=timeout)
+        return
+    except TransportError as exc:
+        if not str(exc).startswith("Command not found:"):
+            raise
+    _run_strict(fallback_cmd, timeout=timeout)
+
+
+def _scp_path() -> str:
+    found = shutil.which("scp")
+    return found or "scp"
+
+
 # ---------------------------------------------------------------------------
 # Low-level operations
 # ---------------------------------------------------------------------------
@@ -193,12 +216,19 @@ def upload_snapshot(
 
     ssh_e = f"ssh {' '.join(_SSH_OPTS)}"
     for local in (tarball, manifest_path):
-        _run_strict([
-            cfg.rsync_path, "-a", "--partial", "--partial-dir=.rsync-partial",
-            "-e", ssh_e,
-            str(local),
-            f"{hub}:{remote_tmp}/{local.name}",
-        ])
+        _run_copy_with_fallback(
+            [
+                cfg.rsync_path, "-a", "--partial", "--partial-dir=.rsync-partial",
+                "-e", ssh_e,
+                str(local),
+                f"{hub}:{remote_tmp}/{local.name}",
+            ],
+            [
+                _scp_path(), "-q", "-S", cfg.ssh_path, *_SSH_OPTS,
+                str(local),
+                f"{hub}:{remote_tmp}/{local.name}",
+            ],
+        )
 
     for fname in (tarball.name, manifest_path.name):
         _run_strict([
@@ -230,12 +260,19 @@ def download_snapshot(
         (f"{snapshot_id}.tar.zst", tarball),
         (f"{snapshot_id}.json", manifest),
     ):
-        _run_strict([
-            cfg.rsync_path, "-a",
-            "-e", ssh_e,
-            f"{hub}:{remote_dir}/{remote_name}",
-            str(local),
-        ])
+        _run_copy_with_fallback(
+            [
+                cfg.rsync_path, "-a",
+                "-e", ssh_e,
+                f"{hub}:{remote_dir}/{remote_name}",
+                str(local),
+            ],
+            [
+                _scp_path(), "-q", "-S", cfg.ssh_path, *_SSH_OPTS,
+                f"{hub}:{remote_dir}/{remote_name}",
+                str(local),
+            ],
+        )
 
     return tarball, manifest
 

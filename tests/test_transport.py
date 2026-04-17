@@ -205,6 +205,26 @@ class TestUploadSnapshot:
             with pytest.raises(TransportError):
                 upload_snapshot(cfg, tarball, manifest_p, DEVICE_ID)
 
+    def test_falls_back_to_scp_when_rsync_missing(self, cfg, tmp_path):
+        tarball = tmp_path / f"{SNAPSHOT_ID}.tar.zst"
+        manifest_p = tmp_path / f"{SNAPSHOT_ID}.json"
+        tarball.write_bytes(b"blob")
+        manifest_p.write_bytes(b"{}")
+
+        calls_made: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls_made.append(cmd)
+            if cmd[0] == "rsync":
+                raise FileNotFoundError(cmd[0])
+            return ok()
+
+        with patch("subprocess.run", side_effect=fake_run), patch("shutil.which", return_value="scp"):
+            upload_snapshot(cfg, tarball, manifest_p, DEVICE_ID)
+
+        scp_calls = [c for c in calls_made if c[0] == "scp"]
+        assert len(scp_calls) == 2
+
 
 # ---------------------------------------------------------------------------
 # download_snapshot
@@ -251,6 +271,21 @@ class TestDownloadSnapshot:
         with patch("subprocess.run", return_value=fail(23, "rsync error")):
             with pytest.raises(TransportError):
                 download_snapshot(cfg, SNAPSHOT_ID, DEVICE_ID, tmp_path / "dl")
+
+    def test_falls_back_to_scp_when_rsync_missing(self, cfg, tmp_path):
+        calls_made: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls_made.append(cmd)
+            if cmd[0] == "rsync":
+                raise FileNotFoundError(cmd[0])
+            return ok()
+
+        with patch("subprocess.run", side_effect=fake_run), patch("shutil.which", return_value="scp"):
+            download_snapshot(cfg, SNAPSHOT_ID, DEVICE_ID, tmp_path / "dl")
+
+        scp_calls = [c for c in calls_made if c[0] == "scp"]
+        assert len(scp_calls) == 2
 
 
 # ---------------------------------------------------------------------------

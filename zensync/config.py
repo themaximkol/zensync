@@ -5,6 +5,7 @@ Returns a Config dataclass with defaults when the file is absent.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -27,6 +28,55 @@ DEFAULT_CONFIG_PATH = _default_config_dir() / "client.toml"
 
 class ConfigError(Exception):
     """Configuration file is invalid or cannot be parsed."""
+
+
+def _windows_tool_candidates(tool: str) -> list[Path]:
+    exe = f"{tool}.exe"
+    candidates: list[Path] = []
+
+    # Common Windows layouts for Git for Windows, cwRsync, and portable installs.
+    prefixes = (
+        ("ProgramFiles", ("Git", "cwRsync")),
+        ("ProgramFiles(x86)", ("Git", "cwRsync")),
+        ("LOCALAPPDATA", ("Programs\\Git", "Programs\\cwRsync")),
+    )
+
+    for env_var, roots in prefixes:
+        base = os.environ.get(env_var)
+        if not base:
+            continue
+        root = Path(base)
+        for rel_root in roots:
+            candidates.append(root / rel_root / "usr" / "bin" / exe)
+            candidates.append(root / rel_root / "bin" / exe)
+
+    return candidates
+
+
+def _resolve_tool_path(configured: str, tool: str) -> str:
+    value = (configured or tool).strip()
+    candidate = Path(value).expanduser()
+
+    if candidate.is_absolute() or any(sep in value for sep in ("/", "\\")):
+        if candidate.exists():
+            return str(candidate)
+        if sys.platform == "win32":
+            # Fall back to common install locations when the configured path
+            # points at a moved or removed installation.
+            for path in _windows_tool_candidates(tool):
+                if path.exists():
+                    return str(path)
+    else:
+        found = shutil.which(value)
+        if found:
+            return found
+
+    if sys.platform == "win32":
+        for path in _windows_tool_candidates(tool):
+            if path.exists():
+                return str(path)
+
+    return value
 
 
 @dataclass
@@ -115,5 +165,7 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     tools = raw.get("tools", {})
     cfg.rsync_path = tools.get("rsync", cfg.rsync_path)
     cfg.ssh_path = tools.get("ssh", cfg.ssh_path)
+    cfg.rsync_path = _resolve_tool_path(cfg.rsync_path, "rsync")
+    cfg.ssh_path = _resolve_tool_path(cfg.ssh_path, "ssh")
 
     return cfg

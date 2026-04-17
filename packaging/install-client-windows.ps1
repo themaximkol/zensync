@@ -49,24 +49,51 @@ try {
 
 # ── Check rsync/ssh (Git for Windows) ────────────────────────────────────────
 Write-Step "Checking rsync and ssh..."
-$GitBin = "C:\Program Files\Git\usr\bin"
+$GitBins = @(
+    "C:\Program Files\Git\usr\bin",
+    "C:\Program Files (x86)\Git\usr\bin",
+    "C:\Program Files\Git\bin",
+    "C:\Program Files (x86)\Git\bin",
+    "C:\Program Files\cwRsync\bin",
+    "C:\Program Files\cwRsync\usr\bin",
+    "C:\Program Files (x86)\cwRsync\bin",
+    "C:\Program Files (x86)\cwRsync\usr\bin"
+)
+if ($env:LOCALAPPDATA) {
+    $GitBins += Join-Path $env:LOCALAPPDATA "Programs\Git\usr\bin"
+    $GitBins += Join-Path $env:LOCALAPPDATA "Programs\Git\bin"
+    $GitBins += Join-Path $env:LOCALAPPDATA "Programs\cwRsync\bin"
+    $GitBins += Join-Path $env:LOCALAPPDATA "Programs\cwRsync\usr\bin"
+}
 
-$rsync = $null
-if (Get-Command rsync -ErrorAction SilentlyContinue) { $rsync = "rsync" }
-elseif (Test-Path "$GitBin\rsync.exe") { $rsync = "$GitBin\rsync.exe" }
+function Resolve-ToolPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name
+    )
 
-$ssh = $null
-if (Get-Command ssh -ErrorAction SilentlyContinue) { $ssh = "ssh" }
-elseif (Test-Path "$GitBin\ssh.exe") { $ssh = "$GitBin\ssh.exe" }
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) {
+        return $cmd.Source
+    }
+
+    foreach ($bin in $GitBins) {
+        $candidate = Join-Path $bin "$Name.exe"
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+$rsync = Resolve-ToolPath -Name "rsync"
+$ssh = Resolve-ToolPath -Name "ssh"
 
 if (-not $rsync) {
-    Write-Warn "rsync not found. Install Git for Windows (https://git-scm.com) which bundles rsync."
-    Write-Warn "Continuing -- you will need to set [tools] rsync in client.toml manually."
-    $rsync = "$GitBin\rsync.exe"
+    Write-Fail "rsync not found. Install Git for Windows (https://git-scm.com) and re-run this installer."
 }
 if (-not $ssh) {
-    Write-Warn "ssh not found. Install Git for Windows or enable the optional OpenSSH client."
-    $ssh = "$GitBin\ssh.exe"
+    Write-Fail "ssh not found. Install Git for Windows or enable the Windows OpenSSH client, then re-run this installer."
 }
 Write-Ok "rsync: $rsync"
 Write-Ok "ssh:   $ssh"
