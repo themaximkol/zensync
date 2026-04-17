@@ -393,6 +393,11 @@ def _push_pointer_with_retry(
             # Refresh expected_updated_at and retry.
 
 
+# Logs are written to RAM to avoid continuous SD card writes.
+# zensync-flush-logs.service flushes them to disk on shutdown/reboot.
+_HUB_LOG_RAM_DIR = "/dev/shm/zensync-logs"
+
+
 def remote_log(
     cfg: Config,
     device_id: str,
@@ -401,9 +406,10 @@ def remote_log(
     detail: str = "",
 ) -> None:
     """
-    Append a structured log entry to the hub's per-device JSONL log file.
+    Append a log entry to the hub's RAM log buffer (/dev/shm/zensync-logs/).
 
-    Path: <hub_remote_root>/logs/<device_id>.jsonl
+    Written to RAM only; flushed to <hub_remote_root>/logs/ on shutdown by
+    zensync-flush-logs.service. Skipped if <hub_remote_root>/logs/.disabled exists.
     Best-effort: errors are silently swallowed so logging never breaks sync.
     """
     entry = json.dumps({
@@ -413,16 +419,38 @@ def remote_log(
         "event": event,
         "detail": detail,
     })
-    log_dir = f"{cfg.hub_remote_root}/logs"
-    log_file = f"{log_dir}/{device_id}.jsonl"
+    persist_dir = f"{cfg.hub_remote_root}/logs"
+    ram_file = f"{_HUB_LOG_RAM_DIR}/{device_id}.jsonl"
+    # Check persistent .disabled sentinel, but write to RAM.
+    cmd = (
+        f"[ -f {persist_dir}/.disabled ] || "
+        f"(mkdir -p {_HUB_LOG_RAM_DIR} && cat >> {ram_file})"
+    )
     try:
-        _run(
-            [cfg.ssh_path, _hub(cfg), f"mkdir -p {log_dir} && cat >> {log_file}"],
-            input=entry + "\n",
-            timeout=10,
-        )
+        _run([cfg.ssh_path, _hub(cfg), cmd], input=entry + "\n", timeout=10)
     except Exception:
         pass
+
+
+def hub_log_set_enabled(cfg: Config, enabled: bool) -> None:
+    """Create or remove the .disabled sentinel on the hub."""
+    sentinel = f"{cfg.hub_remote_root}/logs/.disabled"
+    log_dir = f"{cfg.hub_remote_root}/logs"
+    if enabled:
+        cmd = f"rm -f {sentinel}"
+    else:
+        cmd = f"mkdir -p {log_dir} && touch {sentinel}"
+    _run_strict([cfg.ssh_path, _hub(cfg), cmd], timeout=15)
+
+
+def hub_log_is_enabled(cfg: Config) -> bool:
+    """Return True if hub logging is currently active (no .disabled sentinel)."""
+    sentinel = f"{cfg.hub_remote_root}/logs/.disabled"
+    result = _run(
+        [cfg.ssh_path, _hub(cfg), f"test -f {sentinel} && echo disabled || echo enabled"],
+        timeout=15,
+    )
+    return result.stdout.strip() != "disabled"
 
 
 def pull(

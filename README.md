@@ -127,7 +127,10 @@ zensync restore --local        roll back to the most recent local backup
 zensync resolve                interactive conflict resolution
 zensync status                 show profile path, file sizes, agent state
 zensync log                    live colored agent log for this device
-zensync hub-log                live colored log across ALL devices (reads hub logs/)
+zensync hub-log                live colored log across ALL devices (RAM + disk)
+zensync hub-log --off          disable hub logging (no SD card writes)
+zensync hub-log --on           re-enable hub logging
+zensync hub-log --status       show whether hub logging is enabled
 zensync upd                    update, fix global symlink, restart agent
 zensync upd --pi               also push updated Pi scripts via SSH
 zensync agent                  run the background agent (used by autostart)
@@ -240,7 +243,8 @@ ssh = "ssh"
 │       ├── 2026-04-14T093122Z-a1b2c3d4.tar.zst
 │       └── 2026-04-14T093122Z-a1b2c3d4.json
 ├── logs/
-│   └── <device_id>.jsonl                  ← per-device event log (push/pull/start/stop)
+│   ├── <device_id>.jsonl                  ← per-device event log (flushed from RAM on shutdown)
+│   └── .disabled                          ← sentinel: if present, hub logging is off
 └── tmp/
     └── <device_id>/                       ← rsync upload staging
 ```
@@ -284,6 +288,28 @@ source ~/.bashrc
 
 After that, `zensync upd` keeps the symlink current automatically on every update.
 
+### Hub logging and SD card wear
+
+Hub logs are written to RAM (`/dev/shm/zensync-logs/`) and flushed to disk in a
+single write by `zensync-flush-logs.service` at shutdown/reboot. This means zero
+continuous SD card writes from logging during normal operation.
+
+To disable hub logging entirely (e.g. if the Pi is very write-sensitive):
+
+```bash
+zensync hub-log --off    # works from any device
+zensync hub-log --on     # re-enable
+zensync hub-log --status # check current state
+```
+
+For the Pi's own agent journal (if the Pi also runs Zen), move journald to RAM:
+
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+echo -e '[Journal]\nStorage=volatile' | sudo tee /etc/systemd/journald.conf.d/ram.conf
+sudo systemctl restart systemd-journald
+```
+
 ---
 
 ## Uninstalling
@@ -313,14 +339,15 @@ loginctl disable-linger "$USER"
 ### Raspberry Pi hub (run these as root / with sudo)
 
 ```bash
-# Stop and remove the prune timer
-sudo systemctl stop zensync-prune.timer zensync-prune.service
-sudo systemctl disable zensync-prune.timer
+# Stop and remove hub systemd units
+sudo systemctl stop zensync-prune.timer zensync-prune.service zensync-flush-logs.service
+sudo systemctl disable zensync-prune.timer zensync-flush-logs.service
 sudo rm -f /etc/systemd/system/zensync-prune.{timer,service}
+sudo rm -f /etc/systemd/system/zensync-flush-logs.service
 sudo systemctl daemon-reload
 
 # Remove helper scripts
-sudo rm -f /usr/local/bin/zensync-update-pointer /usr/local/bin/zensync-prune
+sudo rm -f /usr/local/bin/zensync-update-pointer /usr/local/bin/zensync-prune /usr/local/bin/zensync-flush-logs
 
 # Remove all hub data (snapshots, latest.json, etc.)
 sudo rm -rf /var/lib/zensync

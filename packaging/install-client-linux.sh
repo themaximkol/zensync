@@ -147,7 +147,7 @@ if [[ $SETUP_HUB -eq 1 ]]; then
     echo "  [ok] $DATA_DIR/ tree ready"
 
     # Install helper scripts
-    for script in zensync-update-pointer zensync-prune; do
+    for script in zensync-update-pointer zensync-prune zensync-flush-logs; do
         src="$PI_DIR/$script"
         if [[ ! -f "$src" ]]; then
             echo "error: cannot find $src" >&2; exit 1
@@ -157,8 +157,8 @@ if [[ $SETUP_HUB -eq 1 ]]; then
         echo "  [installed] $script"
     done
 
-    # Install and enable systemd timer
-    for unit in zensync-prune.service zensync-prune.timer; do
+    # Install and enable systemd units
+    for unit in zensync-prune.service zensync-prune.timer zensync-flush-logs.service; do
         src="$PI_DIR/$unit"
         if [[ ! -f "$src" ]]; then
             echo "error: cannot find $src" >&2; exit 1
@@ -168,6 +168,8 @@ if [[ $SETUP_HUB -eq 1 ]]; then
     systemctl daemon-reload
     systemctl enable --now zensync-prune.timer
     echo "  [enabled] zensync-prune.timer"
+    systemctl enable --now zensync-flush-logs.service
+    echo "  [enabled] zensync-flush-logs.service (flushes RAM logs to disk on shutdown)"
 
     # Smoke-test the update-pointer helper
     SMOKE_OUT=$(

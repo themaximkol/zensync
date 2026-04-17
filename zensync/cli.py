@@ -612,9 +612,31 @@ def _cmd_hub_log(args: argparse.Namespace) -> int:
     import time as _time
     import json as _json
     from zensync.config import load as load_config
-    from zensync.transport import _hub, _run
+    from zensync.transport import _hub, _run, hub_log_set_enabled, hub_log_is_enabled, TransportError
 
     cfg = load_config()
+
+    # --on / --off toggle
+    if getattr(args, "on", False) or getattr(args, "off", False):
+        enable = getattr(args, "on", False)
+        try:
+            hub_log_set_enabled(cfg, enable)
+            state = "enabled" if enable else "disabled"
+            print(f"Hub logging {state}.")
+        except TransportError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    # --status
+    if getattr(args, "status", False):
+        try:
+            enabled = hub_log_is_enabled(cfg)
+            print(f"Hub logging: {'enabled' if enabled else 'disabled'}")
+        except TransportError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return 0
     tty = sys.stdout.isatty()
 
     RESET = "\033[0m" if tty else ""
@@ -637,9 +659,13 @@ def _cmd_hub_log(args: argparse.Namespace) -> int:
         return device_map[device_id][1]
 
     def _fetch_entries() -> list[dict]:
-        log_glob = f"{cfg.hub_remote_root}/logs/*.jsonl"
+        # Read from both RAM buffer (current session) and persistent storage (previous sessions).
+        from zensync.transport import _HUB_LOG_RAM_DIR
+        persist_glob = f"{cfg.hub_remote_root}/logs/*.jsonl"
+        ram_glob = f"{_HUB_LOG_RAM_DIR}/*.jsonl"
         result = _run(
-            [cfg.ssh_path, _hub(cfg), f"cat {log_glob} 2>/dev/null || true"],
+            [cfg.ssh_path, _hub(cfg),
+             f"cat {ram_glob} {persist_glob} 2>/dev/null || true"],
             timeout=30,
         )
         entries = []
@@ -1098,6 +1124,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Print recent entries and exit instead of following")
     p.add_argument("-n", "--lines", type=int, metavar="N",
                    help="Number of recent entries to show (default: 100)")
+    p.add_argument("--on",  action="store_true", help="Enable hub logging (removes .disabled sentinel)")
+    p.add_argument("--off", action="store_true", help="Disable hub logging (reduces SD card writes)")
+    p.add_argument("--status", action="store_true", help="Show whether hub logging is enabled")
 
     # upd
     p = sub.add_parser("upd", help="Update zensync to the latest version from GitHub")

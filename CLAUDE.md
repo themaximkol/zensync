@@ -214,8 +214,9 @@ Because writing to an active Zen profile corrupts it, and merging two live sessi
 │   └── <other_device_id>/
 │       └── ...
 ├── logs/
-│   ├── <device_id>.jsonl                          # per-device event log (push/pull/start/stop)
-│   └── <other_device_id>.jsonl
+│   ├── <device_id>.jsonl                          # per-device event log (flushed from RAM on shutdown)
+│   ├── <other_device_id>.jsonl
+│   └── .disabled                                  # sentinel: if present, hub logging is off
 └── tmp/
     └── <device_id>/                               # rsync upload staging
 ```
@@ -325,7 +326,7 @@ If any step fails, the local backup in step 3 is the recovery point. `zensync re
 
 ## 11. Pi-side code (the only "server" code)
 
-There are exactly two small pieces of code on the Pi:
+There are three small pieces of code on the Pi:
 
 ### `zensync-update-pointer`
 
@@ -340,7 +341,13 @@ A ~80-line Python script run by a systemd timer (`zensync-prune.timer`) once a d
 - Keep the last 5 soft snapshots per device only.
 - Never delete the snapshot currently named in `latest.json`.
 
-Both scripts are pure stdlib. No FastAPI, no SQLite, no third-party deps on the Pi side beyond what `rsync` and `ssh` already provide.
+### `zensync-flush-logs`
+
+A ~40-line Python script run by `zensync-flush-logs.service` (a `RemainAfterExit=yes` systemd service whose `ExecStop` fires on shutdown/reboot). Merges per-device JSONL files from `/dev/shm/zensync-logs/` (RAM) into `/var/lib/zensync/logs/` (disk). This means hub logs are written to the SD card **once per session** at shutdown rather than on every push/pull event.
+
+Hub logging can be disabled entirely by creating `/var/lib/zensync/logs/.disabled` — `remote_log()` checks for this sentinel in the same SSH call as the write, so there is no extra round-trip. Use `zensync hub-log --off/--on/--status` from any device.
+
+All three scripts are pure stdlib. No FastAPI, no SQLite, no third-party deps on the Pi side beyond what `rsync` and `ssh` already provide.
 
 ### Tailscale SSH setup
 
@@ -428,7 +435,10 @@ zensync restore --local latest  # roll back to the most recent local backup
 zensync resolve                 # interactive conflict resolution
 zensync launch [-- zen-args]    # pull then exec Zen; recommended shortcut target
 zensync log                     # live colored agent log for this device
-zensync hub-log                 # live colored log across ALL devices (reads Pi logs/)
+zensync hub-log                 # live colored log across ALL devices (RAM + disk)
+zensync hub-log --off           # disable hub logging (creates .disabled sentinel on hub)
+zensync hub-log --on            # re-enable hub logging
+zensync hub-log --status        # show whether hub logging is enabled
 zensync upd                     # git pull + pip reinstall + symlink fix + restart agent
 zensync upd --pi                # also rsync updated Pi helper scripts
 zensync agent                   # run the long-lived agent (used by autostart)
@@ -509,6 +519,8 @@ zensync/
     zensync-prune                 # installed to /usr/local/bin/
     zensync-prune.service         # systemd oneshot
     zensync-prune.timer           # daily timer
+    zensync-flush-logs            # installed to /usr/local/bin/
+    zensync-flush-logs.service    # flushes RAM logs to disk on shutdown
     install-pi.sh                 # creates user, dir, installs scripts, prints ACL hint
   packaging/
     zensync-agent.service         # systemd --user (client)
