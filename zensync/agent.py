@@ -13,9 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
+
+from platformdirs import user_log_dir
 
 from zensync.config import Config, load as load_config
 from zensync.profile import ProfileNotFoundError, discover
@@ -23,14 +27,47 @@ from zensync.state import AgentPhase, AgentStateMachine, State
 from zensync.watcher import ZenWatcher, is_zen_running
 
 _POLL_SECONDS = 1.0
+_WINDOWS_LOG_MAX_BYTES = 1_000_000
+_WINDOWS_LOG_BACKUP_COUNT = 5
+
+
+def windows_agent_log_path() -> Path:
+    return Path(user_log_dir("zensync")) / "agent.log"
 
 
 def _setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(levelname)-7s  %(message)s",
+    fmt = logging.Formatter(
+        fmt="%(asctime)s  %(levelname)-7s  %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(logging.INFO)
+
+    handlers: list[logging.Handler] = []
+    if sys.platform == "win32":
+        log_path = windows_agent_log_path()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_path,
+            maxBytes=_WINDOWS_LOG_MAX_BYTES,
+            backupCount=_WINDOWS_LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(fmt)
+        handlers.append(file_handler)
+
+        if getattr(sys.stderr, "write", None) is not None:
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(fmt)
+            handlers.append(stream_handler)
+    else:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(fmt)
+        handlers.append(stream_handler)
+
+    for handler in handlers:
+        root.addHandler(handler)
 
 
 # ---------------------------------------------------------------------------
@@ -266,4 +303,4 @@ def run(
         asyncio.run(_run_async(profile_path, cfg, log))
     except KeyboardInterrupt:
         log.info("Agent stopped.")
-        _fire_remote_log(cfg, state, "agent_stop")
+        _fire_remote_log(cfg, State.load(), "agent_stop")

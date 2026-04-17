@@ -73,10 +73,9 @@ def _install_console_sanitizer() -> None:
     if sys.platform != "win32":
         return
 
-    sample = "—…→←↑↓·✓✗■▶─━┄"
-    if not _stream_supports_text(sys.stdout, sample):
+    if not isinstance(sys.stdout, _ConsoleSanitizingStream):
         sys.stdout = _ConsoleSanitizingStream(sys.stdout)
-    if not _stream_supports_text(sys.stderr, sample):
+    if not isinstance(sys.stderr, _ConsoleSanitizingStream):
         sys.stderr = _ConsoleSanitizingStream(sys.stderr)
 
 
@@ -850,9 +849,14 @@ def _cmd_upd(args: argparse.Namespace) -> int:
         except UnicodeEncodeError:
             return False
 
-    ok_mark = "✓" if _supports_text(stdout_encoding, "✓") else "[ok]"
-    err_mark = "✗" if _supports_text(stderr_encoding, "✗") else "[error]"
-    arrow = "→" if _supports_text(stdout_encoding, "→") else "->"
+    if sys.platform == "win32":
+        ok_mark = "[ok]"
+        err_mark = "[error]"
+        arrow = "->"
+    else:
+        ok_mark = "✓" if _supports_text(stdout_encoding, "✓") else "[ok]"
+        err_mark = "✗" if _supports_text(stderr_encoding, "✗") else "[error]"
+        arrow = "→" if _supports_text(stdout_encoding, "→") else "->"
 
     def ok(msg: str)   -> None: print(f"  {GREEN}{ok_mark}{RESET}  {msg}")
     def warn(msg: str) -> None: print(f"  {YELLOW}!{RESET}  {msg}")
@@ -1023,6 +1027,70 @@ def _cmd_upd(args: argparse.Namespace) -> int:
 def _cmd_log(args: argparse.Namespace) -> int:
     import re
     import subprocess
+    import time
+
+    if sys.platform == "win32":
+        from zensync.agent import windows_agent_log_path
+
+        log_path = windows_agent_log_path()
+        lines = getattr(args, "lines", None) or 500
+        follow = not getattr(args, "no_follow", False)
+
+        def _windows_log_files() -> list[Path]:
+            backups: list[tuple[int, Path]] = []
+            if log_path.parent.is_dir():
+                for candidate in log_path.parent.glob(f"{log_path.name}.*"):
+                    try:
+                        backups.append((int(candidate.suffix[1:]), candidate))
+                    except ValueError:
+                        continue
+            ordered = [path for _, path in sorted(backups, reverse=True)]
+            if log_path.exists():
+                ordered.append(log_path)
+            return ordered
+
+        def _read_windows_log_lines() -> list[str]:
+            entries: list[str] = []
+            for path in _windows_log_files():
+                entries.extend(path.read_text(encoding="utf-8", errors="replace").splitlines())
+            return entries
+
+        entries = _read_windows_log_lines()
+        if not entries:
+            print(
+                f"error: no Windows agent log found yet at {log_path}. "
+                "Start the ZenSync Agent scheduled task or run 'zensync agent' once.",
+                file=sys.stderr,
+            )
+            return 1
+
+        tail = entries[-lines:] if len(entries) > lines else entries
+        for line in tail:
+            print(line)
+
+        if not follow:
+            return 0
+
+        print("\nFollowing Windows agent log - Ctrl-C to stop", flush=True)
+        position = log_path.stat().st_size if log_path.exists() else 0
+        try:
+            while True:
+                if not log_path.exists():
+                    time.sleep(1)
+                    continue
+                size = log_path.stat().st_size
+                if size < position:
+                    position = 0
+                with log_path.open("r", encoding="utf-8", errors="replace") as fh:
+                    fh.seek(position)
+                    chunk = fh.read()
+                    position = fh.tell()
+                if chunk:
+                    for line in chunk.splitlines():
+                        print(line)
+                time.sleep(1)
+        except KeyboardInterrupt:
+            return 0
 
     tty = sys.stdout.isatty()
     ansi = _supports_ansi(sys.stdout)

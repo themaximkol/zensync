@@ -111,6 +111,8 @@ bundles `rsync.exe` and `ssh.exe`). The script detects them automatically.
 Config lives at `%APPDATA%\zensync\client.toml`.
 
 The agent is registered as a Scheduled Task that starts at logon.
+On Windows, local agent logs are written to `%LOCALAPPDATA%\zensync\logs\agent.log`
+so `zensync log` has a file-backed source instead of `journalctl`.
 
 ---
 
@@ -153,6 +155,10 @@ zensync upd                    update, fix global symlink, restart agent
 zensync upd --pi               also push updated Pi scripts via SSH
 zensync agent                  run the background agent (used by autostart)
 ```
+
+On Linux, `zensync log` reads the systemd user journal. On Windows, it tails the
+local file `%LOCALAPPDATA%\zensync\logs\agent.log`, which is written by the
+Scheduled Task / agent process.
 
 ---
 
@@ -283,8 +289,9 @@ zensync upd
 ```
 
 `zensync upd` does everything in one shot: `git pull`, `pip install -e .`, ensures
-the `~/.local/bin/zensync` global symlink is current, and restarts the agent service.
-Run it whenever you update the repo on any device.
+the `~/.local/bin/zensync` global symlink is current on Linux, and restarts the
+agent (`systemd --user` on Linux, Scheduled Task on Windows). Run it whenever you
+update the repo on any device.
 
 To also push updated Pi helper scripts at the same time:
 
