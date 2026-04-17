@@ -4,27 +4,33 @@
     Install the ZenSync client on Windows.
 
 .DESCRIPTION
-    - Checks for Python 3.11+ and Git for Windows (which bundles rsync + ssh).
+    - Checks for Python 3.11+ plus Windows rsync/ssh tooling.
+    - rsync is typically provided by cwRsync on Windows.
+    - ssh can come from Windows OpenSSH, cwRsync, or another compatible client.
     - Installs the zensync package via pip.
     - Writes an initial client.toml to %APPDATA%\zensync\.
     - Registers the agent as a Scheduled Task that runs at logon.
 
 .PARAMETER HubHost
-    Tailscale MagicDNS hostname of the Pi hub (e.g. "raspberrypi").
+    Tailscale MagicDNS hostname of the Pi hub (default: "pi5").
 
 .PARAMETER HubUser
     SSH user on the hub (default: zensync).
 
+.PARAMETER DeviceName
+    Human-readable name for this machine (default: COMPUTERNAME).
+
 .EXAMPLE
-    .\install-client-windows.ps1 -HubHost raspberrypi
+    .\install-client-windows.ps1 -HubHost pi5 -DeviceName thinkpad-x1
 
 .NOTES
     If scripts are blocked: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-    Or bypass once:         powershell -ExecutionPolicy Bypass -File .\install-client-windows.ps1 -HubHost raspberrypi
+    Or bypass once:         powershell -ExecutionPolicy Bypass -File .\install-client-windows.ps1 -HubHost pi5
 #>
 param(
-    [string]$HubHost = "raspberrypi",
-    [string]$HubUser = "zensync"
+    [string]$HubHost = "pi5",
+    [string]$HubUser = "zensync",
+    [string]$DeviceName = $env:COMPUTERNAME
 )
 
 Set-StrictMode -Version Latest
@@ -47,9 +53,9 @@ try {
     Write-Fail "python not found on PATH. Install Python 3.11+ from https://python.org"
 }
 
-# ── Check rsync/ssh (Git for Windows) ────────────────────────────────────────
+# ── Check rsync/ssh ──────────────────────────────────────────────────────────
 Write-Step "Checking rsync and ssh..."
-$GitBins = @(
+$ToolBins = @(
     "C:\Program Files\Git\usr\bin",
     "C:\Program Files (x86)\Git\usr\bin",
     "C:\Program Files\Git\bin",
@@ -60,10 +66,10 @@ $GitBins = @(
     "C:\Program Files (x86)\cwRsync\usr\bin"
 )
 if ($env:LOCALAPPDATA) {
-    $GitBins += Join-Path $env:LOCALAPPDATA "Programs\Git\usr\bin"
-    $GitBins += Join-Path $env:LOCALAPPDATA "Programs\Git\bin"
-    $GitBins += Join-Path $env:LOCALAPPDATA "Programs\cwRsync\bin"
-    $GitBins += Join-Path $env:LOCALAPPDATA "Programs\cwRsync\usr\bin"
+    $ToolBins += Join-Path $env:LOCALAPPDATA "Programs\Git\usr\bin"
+    $ToolBins += Join-Path $env:LOCALAPPDATA "Programs\Git\bin"
+    $ToolBins += Join-Path $env:LOCALAPPDATA "Programs\cwRsync\bin"
+    $ToolBins += Join-Path $env:LOCALAPPDATA "Programs\cwRsync\usr\bin"
 }
 
 function Resolve-ToolPath {
@@ -76,7 +82,7 @@ function Resolve-ToolPath {
         return $cmd.Source
     }
 
-    foreach ($bin in $GitBins) {
+    foreach ($bin in $ToolBins) {
         $candidate = Join-Path $bin "$Name.exe"
         if (Test-Path $candidate) {
             return $candidate
@@ -90,10 +96,10 @@ $rsync = Resolve-ToolPath -Name "rsync"
 $ssh = Resolve-ToolPath -Name "ssh"
 
 if (-not $rsync) {
-    Write-Fail "rsync not found. Install Git for Windows (https://git-scm.com) and re-run this installer."
+    Write-Fail "rsync not found. Install cwRsync client (https://github.com/itefixnet/cwrsync-client/releases) and re-run this installer."
 }
 if (-not $ssh) {
-    Write-Fail "ssh not found. Install Git for Windows or enable the Windows OpenSSH client, then re-run this installer."
+    Write-Fail "ssh not found. Enable the Windows OpenSSH client, install cwRsync, or install another compatible SSH client, then re-run this installer."
 }
 Write-Ok "rsync: $rsync"
 Write-Ok "ssh:   $ssh"
@@ -134,7 +140,6 @@ New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 if (Test-Path $configFile) {
     Write-Ok "$configFile already exists -- skipping"
 } else {
-    $hostname = $env:COMPUTERNAME
     $nl = "`r`n"
     $config  = "[hub]$nl"
     $config += "host = `"$HubHost`"$nl"
@@ -143,7 +148,7 @@ if (Test-Path $configFile) {
     $config += "$nl"
     $config += "[device]$nl"
     $config += "id = `"auto`"$nl"
-    $config += "name = `"$hostname`"$nl"
+    $config += "name = `"$DeviceName`"$nl"
     $config += "$nl"
     $config += "[zen]$nl"
     $config += "profile_path = `"`"$nl"

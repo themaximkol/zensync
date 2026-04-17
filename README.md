@@ -18,8 +18,8 @@ protocol. The entire "server" is two ~100-line Python scripts.
 | Component | Version |
 |---|---|
 | Python | 3.11+ |
-| rsync | any recent (ships with Linux; Git for Windows on Windows) |
-| ssh | OpenSSH (ships with Linux; Git for Windows / OpenSSH optional feature on Windows) |
+| rsync | any recent (ships with Linux; install cwRsync on Windows) |
+| ssh | OpenSSH (ships with Linux; Windows OpenSSH optional feature or cwRsync on Windows) |
 | Tailscale | installed and connected on every device |
 
 Zen Browser must be installed. ZenSync does not install it.
@@ -71,7 +71,7 @@ ssh zensync@<pi-tailscale-hostname> echo ok
 ### 2 — Install on Linux clients
 
 ```bash
-bash packaging/install-client-linux.sh --hub <pi-tailscale-hostname> --device <machine-name>
+bash packaging/install-client-linux.sh --hub pi5 --device <machine-name>
 ```
 
 This installs the package, writes `~/.config/zensync/client.toml`, accepts the
@@ -84,7 +84,7 @@ Pi's SSH host key, and enables the systemd user service (starts at login and boo
 In PowerShell (normal user, not admin):
 
 ```powershell
-.\packaging\install-client-windows.ps1 -HubHost <pi-tailscale-hostname>
+.\packaging\install-client-windows.ps1 -HubHost pi5 -DeviceName <machine-name>
 ```
 
 > **Script blocked?** Windows disables unsigned scripts by default. Fix it once with:
@@ -93,11 +93,13 @@ In PowerShell (normal user, not admin):
 > ```
 > Or bypass for a single run without changing policy:
 > ```powershell
-> powershell -ExecutionPolicy Bypass -File .\packaging\install-client-windows.ps1 -HubHost <pi-tailscale-hostname>
+> powershell -ExecutionPolicy Bypass -File .\packaging\install-client-windows.ps1 -HubHost pi5 -DeviceName <machine-name>
 > ```
 
-Requirements: Python 3.11+ and [Git for Windows](https://git-scm.com) (which
-bundles `rsync.exe` and `ssh.exe`). The script detects them automatically.
+Requirements: Python 3.11+ plus Windows `rsync`/`ssh` tooling. The simplest path
+is [cwRsync client](https://github.com/itefixnet/cwrsync-client/releases) for
+`rsync.exe`, plus either Windows OpenSSH or cwRsync for `ssh.exe`. The script
+detects common install locations automatically.
 
 Config lives at `%APPDATA%\zensync\client.toml`.
 
@@ -207,7 +209,7 @@ IDLE ──(Zen opens)──> RUNNING ──(Zen exits + 5s grace)──> PUSHIN
 
 ```toml
 [hub]
-host = "raspberrypi"        # Tailscale MagicDNS hostname of the Pi
+host = "pi5"                # Tailscale MagicDNS hostname of the Pi
 user = "zensync"
 remote_root = "/var/lib/zensync"
 
@@ -240,7 +242,7 @@ soft_promotion_after_hours = 24
 policy = "prompt"           # prompt | prefer-remote | prefer-local
 
 [tools]
-# Override if rsync/ssh aren't on PATH (needed on Windows without Git for Windows)
+# Override if rsync/ssh aren't on PATH (common on Windows)
 rsync = "rsync"
 ssh = "ssh"
 ```
@@ -392,10 +394,11 @@ zensync push --dry-run        # pack + print manifest, no network
 
 ### rsync on Windows
 
-Install [Git for Windows](https://git-scm.com/download/win). The install script
-detects `C:\Program Files\Git\usr\bin\rsync.exe` automatically. Alternatives
-(MSYS2, cwRsync) work but require setting `[tools] rsync` manually in
-`client.toml`.
+Install [cwRsync client](https://github.com/itefixnet/cwrsync-client/releases)
+or another compatible Windows `rsync` build. Git for Windows is still useful
+for `ssh.exe`, but it does not reliably provide `rsync.exe`. The install script
+detects common `cwRsync` and Git/OpenSSH locations automatically; if you use a
+different layout, set `[tools] rsync` / `ssh` manually in `client.toml`.
 
 ---
 

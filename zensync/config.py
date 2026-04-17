@@ -82,7 +82,7 @@ def _resolve_tool_path(configured: str, tool: str) -> str:
 @dataclass
 class Config:
     # [hub]
-    hub_host: str = "raspberrypi"
+    hub_host: str = "pi5"
     hub_user: str = "zensync"
     hub_remote_root: str = "/var/lib/zensync"
 

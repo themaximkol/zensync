@@ -8,6 +8,13 @@ import pytest
 from zensync.config import ConfigError, _resolve_tool_path, load
 
 
+def test_load_defaults_to_pi5_hub_host_when_config_missing(tmp_path: Path):
+    cfg = load(tmp_path / "missing.toml")
+
+    assert cfg.hub_host == "pi5"
+    assert cfg.device_name == ""
+
+
 def test_load_raises_config_error_for_unescaped_windows_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

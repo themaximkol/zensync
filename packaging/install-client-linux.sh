@@ -5,21 +5,21 @@
 #   bash install-client-linux.sh [OPTIONS]
 #
 # Options:
-#   --hub HOST        Tailscale hostname of the Pi hub (default: raspberrypi)
+#   --hub HOST        Tailscale hostname of the Pi hub (default: pi5)
 #   --user USER       SSH user on the hub (default: zensync)
 #   --device NAME     Human name for this machine (default: hostname)
 #   --setup-hub       Also set up this machine as the storage hub (requires sudo)
 #
 # Examples:
 #   # Regular client
-#   bash install-client-linux.sh --hub raspberrypi --device thinkpad-x1
+#   bash install-client-linux.sh --hub pi5 --device thinkpad-x1
 #
 #   # Raspberry Pi that is BOTH hub and client (one command does everything)
 #   sudo bash install-client-linux.sh --hub localhost --device raspberrypi --setup-hub
 
 set -euo pipefail
 
-HUB_HOST="raspberrypi"
+HUB_HOST="pi5"
 HUB_USER="zensync"
 DEVICE_NAME="$(hostname)"
 SETUP_HUB=0
