@@ -80,6 +80,29 @@ def _install_console_sanitizer() -> None:
         sys.stderr = _ConsoleSanitizingStream(sys.stderr)
 
 
+def _supports_ansi(stream) -> bool:
+    if not getattr(stream, "isatty", lambda: False)():
+        return False
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.name != "nt":
+        return True
+
+    term = os.environ.get("TERM", "").lower()
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    if os.environ.get("WT_SESSION"):
+        return True
+    if os.environ.get("ANSICON"):
+        return True
+    if os.environ.get("ConEmuANSI", "").upper() == "ON":
+        return True
+    if term_program in {"vscode", "mintty"}:
+        return True
+    if any(token in term for token in ("xterm", "ansi", "vt100", "vt220", "screen")):
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
@@ -706,13 +729,14 @@ def _cmd_hub_log(args: argparse.Namespace) -> int:
             return 1
         return 0
     tty = sys.stdout.isatty()
+    ansi = _supports_ansi(sys.stdout)
 
-    RESET = "\033[0m" if tty else ""
-    BOLD  = "\033[1m" if tty else ""
-    DIM   = "\033[2m" if tty else ""
+    RESET = "\033[0m" if ansi else ""
+    BOLD  = "\033[1m" if ansi else ""
+    DIM   = "\033[2m" if ansi else ""
 
     def _esc(s: str) -> str:
-        return s if tty else ""
+        return s if ansi else ""
 
     # device_id → (hostname, color_str)
     device_map: dict[str, tuple[str, str]] = {}
@@ -812,10 +836,11 @@ def _cmd_upd(args: argparse.Namespace) -> int:
     import zensync as _pkg
 
     tty = sys.stdout.isatty()
+    ansi = _supports_ansi(sys.stdout)
     stdout_encoding = (sys.stdout.encoding or "").lower()
     stderr_encoding = (sys.stderr.encoding or "").lower()
     def _esc(*c: int) -> str:
-        return f"\033[{';'.join(str(x) for x in c)}m" if tty else ""
+        return f"\033[{';'.join(str(x) for x in c)}m" if ansi else ""
     RESET = _esc(0); BOLD = _esc(1); GREEN = _esc(92); YELLOW = _esc(93); RED = _esc(91); DIM = _esc(2)
 
     def _supports_text(stream_encoding: str, text: str) -> bool:
@@ -1000,9 +1025,10 @@ def _cmd_log(args: argparse.Namespace) -> int:
     import subprocess
 
     tty = sys.stdout.isatty()
+    ansi = _supports_ansi(sys.stdout)
 
     def _esc(*codes: int) -> str:
-        return f"\033[{';'.join(str(c) for c in codes)}m" if tty else ""
+        return f"\033[{';'.join(str(c) for c in codes)}m" if ansi else ""
 
     RESET  = _esc(0)
     BOLD   = _esc(1)
