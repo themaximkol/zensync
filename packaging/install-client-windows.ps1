@@ -17,6 +17,10 @@
 
 .EXAMPLE
     .\install-client-windows.ps1 -HubHost raspberrypi
+
+.NOTES
+    If scripts are blocked: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+    Or bypass once:         powershell -ExecutionPolicy Bypass -File .\install-client-windows.ps1 -HubHost raspberrypi
 #>
 param(
     [string]$HubHost = "raspberrypi",
@@ -34,30 +38,30 @@ function Write-Fail { param($msg) Write-Host "  [error] $msg" -ForegroundColor R
 Write-Host "`nZenSync client installer for Windows`n" -ForegroundColor White
 
 # ── Check Python ──────────────────────────────────────────────────────────────
-Write-Step "Checking Python…"
+Write-Step "Checking Python..."
 try {
     $pyVer = & python --version 2>&1
-    if ($pyVer -notmatch "Python 3\.(1[1-9]|[2-9]\d)") {
-        Write-Fail "Python 3.11+ required. Found: $pyVer"
-    }
+    if ($pyVer -notmatch "Python 3\.(1[1-9]|[2-9]\d)") { Write-Fail "Python 3.11+ required. Found: $pyVer" }
     Write-Ok $pyVer
 } catch {
     Write-Fail "python not found on PATH. Install Python 3.11+ from https://python.org"
 }
 
 # ── Check rsync/ssh (Git for Windows) ────────────────────────────────────────
-Write-Step "Checking rsync and ssh…"
+Write-Step "Checking rsync and ssh..."
 $GitBin = "C:\Program Files\Git\usr\bin"
-$rsync = if (Get-Command rsync -ErrorAction SilentlyContinue) { "rsync" }
-         elseif (Test-Path "$GitBin\rsync.exe") { "$GitBin\rsync.exe" }
-         else { $null }
-$ssh   = if (Get-Command ssh -ErrorAction SilentlyContinue) { "ssh" }
-         elseif (Test-Path "$GitBin\ssh.exe") { "$GitBin\ssh.exe" }
-         else { $null }
+
+$rsync = $null
+if (Get-Command rsync -ErrorAction SilentlyContinue) { $rsync = "rsync" }
+elseif (Test-Path "$GitBin\rsync.exe") { $rsync = "$GitBin\rsync.exe" }
+
+$ssh = $null
+if (Get-Command ssh -ErrorAction SilentlyContinue) { $ssh = "ssh" }
+elseif (Test-Path "$GitBin\ssh.exe") { $ssh = "$GitBin\ssh.exe" }
 
 if (-not $rsync) {
     Write-Warn "rsync not found. Install Git for Windows (https://git-scm.com) which bundles rsync."
-    Write-Warn "Continuing — you will need to set [tools] rsync in client.toml manually."
+    Write-Warn "Continuing -- you will need to set [tools] rsync in client.toml manually."
     $rsync = "$GitBin\rsync.exe"
 }
 if (-not $ssh) {
@@ -68,7 +72,7 @@ Write-Ok "rsync: $rsync"
 Write-Ok "ssh:   $ssh"
 
 # ── Install package ───────────────────────────────────────────────────────────
-Write-Step "Installing zensync package…"
+Write-Step "Installing zensync package..."
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $parentDir = Split-Path -Parent $scriptDir
 if (Test-Path "$parentDir\pyproject.toml") {
@@ -79,19 +83,18 @@ if (Test-Path "$parentDir\pyproject.toml") {
 Write-Ok "zensync installed"
 
 # ── Write config ──────────────────────────────────────────────────────────────
-Write-Step "Writing client configuration…"
-$configDir = "$env:APPDATA\zensync"
+Write-Step "Writing client configuration..."
+$configDir  = "$env:APPDATA\zensync"
 $configFile = "$configDir\client.toml"
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
 if (Test-Path $configFile) {
-    Write-Ok "$configFile already exists — skipping"
+    Write-Ok "$configFile already exists -- skipping"
 } else {
-    $rsyncEscaped = $rsync -replace '\\', '\\'
-    $sshEscaped   = $ssh   -replace '\\', '\\'
+    $rsyncVal = $rsync -replace '\\', '\\'
+    $sshVal   = $ssh   -replace '\\', '\\'
     $hostname = $env:COMPUTERNAME
     $nl = "`r`n"
-
     $config  = "[hub]$nl"
     $config += "host = `"$HubHost`"$nl"
     $config += "user = `"$HubUser`"$nl"
@@ -121,57 +124,42 @@ if (Test-Path $configFile) {
     $config += "policy = `"prompt`"$nl"
     $config += "$nl"
     $config += "[tools]$nl"
-    $config += "rsync = `"$rsyncEscaped`"$nl"
-    $config += "ssh   = `"$sshEscaped`"$nl"
-
+    $config += "rsync = `"$rsyncVal`"$nl"
+    $config += "ssh   = `"$sshVal`"$nl"
     [System.IO.File]::WriteAllText($configFile, $config, (New-Object System.Text.UTF8Encoding $false))
     Write-Ok "Config written to $configFile"
 }
 
 # ── Accept hub SSH host key ───────────────────────────────────────────────────
-Write-Step "Trusting hub SSH host key for $HubHost…"
+Write-Step "Trusting hub SSH host key for $HubHost..."
 try {
     & $ssh -o StrictHostKeyChecking=accept-new "$HubUser@$HubHost" "echo ok" 2>$null
     Write-Ok "Host key accepted"
 } catch {
-    Write-Warn "Could not connect to $HubHost — accept the host key manually on first connection"
+    Write-Warn "Could not connect to $HubHost -- accept the host key manually on first connection"
 }
 
 # ── Register Scheduled Task ───────────────────────────────────────────────────
-Write-Step "Registering Scheduled Task 'ZenSync Agent'…"
+Write-Step "Registering Scheduled Task 'ZenSync Agent'..."
 $taskName = "ZenSync Agent"
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Ok "Task '$taskName' already registered — skipping"
+    Write-Ok "Task '$taskName' already registered -- skipping"
 } else {
-    $action  = New-ScheduledTaskAction -Execute "pythonw.exe" -Argument "-m zensync agent"
-    $trigger = New-ScheduledTaskTrigger -AtLogon
-    $settings = New-ScheduledTaskSettingsSet `
-        -MultipleInstances IgnoreNew `
-        -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
-        -RestartCount 999 `
-        -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask `
-        -TaskName  $taskName `
-        -Action    $action `
-        -Trigger   $trigger `
-        -Settings  $settings `
-        -RunLevel  Highest `
-        -Force | Out-Null
+    $action   = New-ScheduledTaskAction -Execute "pythonw.exe" -Argument "-m zensync agent"
+    $trigger  = New-ScheduledTaskTrigger -AtLogon
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force | Out-Null
     Write-Ok "Scheduled Task '$taskName' registered"
-
-    # Start immediately.
     Start-ScheduledTask -TaskName $taskName
     Write-Ok "Agent started"
 }
 
-$bar = "━" * 79
+# ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host $bar -ForegroundColor White
-Write-Host "Installation complete." -ForegroundColor White
+Write-Host "Installation complete." -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor White
 Write-Host "  1. Edit $configFile and verify hub.host." -ForegroundColor White
 Write-Host "  2. Test:  zensync status" -ForegroundColor White
 Write-Host "  3. Use 'zensync launch' as your Zen Browser shortcut." -ForegroundColor White
-Write-Host $bar -ForegroundColor White
