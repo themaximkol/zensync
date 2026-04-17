@@ -160,10 +160,14 @@ $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($existing) {
     Write-Ok "Task '$taskName' already registered -- skipping"
 } else {
-    $action   = New-ScheduledTaskAction -Execute "pythonw.exe" -Argument "-m zensync agent"
-    $trigger  = New-ScheduledTaskTrigger -AtLogon
+    $pythonDir = & python -c "import sys, os; print(os.path.dirname(sys.executable))" 2>$null
+    $pythonw = if ($pythonDir -and (Test-Path "$pythonDir\pythonw.exe")) { "$pythonDir\pythonw.exe" } else { "pythonw.exe" }
+    $zensyncExe = if ($pyScripts -and (Test-Path "$pyScripts\zensync.exe")) { "$pyScripts\zensync.exe" } else { "zensync" }
+    $action   = New-ScheduledTaskAction -Execute $pythonw -Argument "-m zensync agent"
+    $trigger  = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
+    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
     Write-Ok "Scheduled Task '$taskName' registered"
     Start-ScheduledTask -TaskName $taskName
     Write-Ok "Agent started"
