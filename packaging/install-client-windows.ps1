@@ -95,6 +95,13 @@ function Resolve-ToolPath {
 $rsync = Resolve-ToolPath -Name "rsync"
 $ssh = Resolve-ToolPath -Name "ssh"
 
+if ($rsync) {
+    $bundledSsh = Join-Path (Split-Path -Parent $rsync) "ssh.exe"
+    if (Test-Path $bundledSsh) {
+        $ssh = $bundledSsh
+    }
+}
+
 if (-not $rsync) {
     Write-Fail "rsync not found. Install cwRsync client (https://github.com/itefixnet/cwrsync-client/releases) and re-run this installer."
 }

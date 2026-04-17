@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 
 from platformdirs import user_data_dir
@@ -146,6 +146,52 @@ def _scp_path() -> str:
     return found or "scp"
 
 
+def _rsync_local_path(path: Path | str) -> str:
+    """
+    Return a local path formatted for the active rsync client.
+
+    cwRsync/Cygwin treat raw ``C:\...`` paths as remote specs because of the
+    drive-letter colon, so convert them to ``/cygdrive/c/...`` on Windows.
+    """
+    text = str(path)
+    if os.name != "nt":
+        return text
+
+    candidate = PureWindowsPath(text)
+    drive = candidate.drive.rstrip(":")
+    if not drive:
+        return text.replace("\\", "/")
+
+    tail_parts = candidate.parts[1:]
+    tail = "/".join(part.strip("\\/") for part in tail_parts if part not in ("\\", "/"))
+    prefix = f"/cygdrive/{drive.lower()}"
+    return f"{prefix}/{tail}" if tail else prefix
+
+
+def _quote_rsync_shell_arg(value: str) -> str:
+    if any(ch.isspace() for ch in value):
+        return f'"{value}"'
+    return value
+
+
+def _rsync_remote_shell(cfg: Config) -> str:
+    """
+    Return the remote-shell command passed to rsync's ``-e`` option.
+
+    On Windows, Cygwin-based rsync builds are most reliable when paired with the
+    sibling ``ssh.exe`` that ships in the same directory, so prefer that when it
+    exists. Direct SSH calls elsewhere in the app still use cfg.ssh_path.
+    """
+    ssh_tool = _resolve_tool(cfg.ssh_path)
+    if os.name == "nt":
+        rsync_tool = Path(_resolve_tool(cfg.rsync_path))
+        bundled_ssh = rsync_tool.with_name("ssh.exe")
+        if bundled_ssh.exists():
+            ssh_tool = str(bundled_ssh)
+        ssh_tool = _quote_rsync_shell_arg(_rsync_local_path(ssh_tool))
+    return " ".join([ssh_tool, *_SSH_OPTS])
+
+
 # ---------------------------------------------------------------------------
 # Low-level operations
 # ---------------------------------------------------------------------------
@@ -214,13 +260,13 @@ def upload_snapshot(
     remote_tmp = f"{cfg.hub_remote_root}/tmp/{device_id}"
     remote_snap = f"{cfg.hub_remote_root}/snapshots/{device_id}"
 
-    ssh_e = f"ssh {' '.join(_SSH_OPTS)}"
+    ssh_e = _rsync_remote_shell(cfg)
     for local in (tarball, manifest_path):
         _run_copy_with_fallback(
             [
                 cfg.rsync_path, "-a", "--partial", "--partial-dir=.rsync-partial",
                 "-e", ssh_e,
-                str(local),
+                _rsync_local_path(local),
                 f"{hub}:{remote_tmp}/{local.name}",
             ],
             [
@@ -255,7 +301,7 @@ def download_snapshot(
     tarball = dest_dir / f"{snapshot_id}.tar.zst"
     manifest = dest_dir / f"{snapshot_id}.json"
 
-    ssh_e = f"ssh {' '.join(_SSH_OPTS)}"
+    ssh_e = _rsync_remote_shell(cfg)
     for remote_name, local in (
         (f"{snapshot_id}.tar.zst", tarball),
         (f"{snapshot_id}.json", manifest),
@@ -265,7 +311,7 @@ def download_snapshot(
                 cfg.rsync_path, "-a",
                 "-e", ssh_e,
                 f"{hub}:{remote_dir}/{remote_name}",
-                str(local),
+                _rsync_local_path(local),
             ],
             [
                 _scp_path(), "-q", "-S", cfg.ssh_path, *_SSH_OPTS,

@@ -21,6 +21,8 @@ from zensync.transport import (
     HubUnreachableError,
     TransportError,
     _run,
+    _rsync_remote_shell,
+    _rsync_local_path,
     download_snapshot,
     ensure_device_dirs,
     read_latest,
@@ -82,6 +84,50 @@ class TestRunFallback:
             _run([stale, "--version"])
 
         assert mock_run.call_args[0][0][0].endswith(r"Git\usr\bin\ssh.exe")
+
+
+class TestRsyncLocalPath:
+    def test_keeps_posix_paths_unchanged_off_windows(self, monkeypatch):
+        monkeypatch.setattr("zensync.transport.os.name", "posix")
+        assert _rsync_local_path("/tmp/file.tar.zst") == "/tmp/file.tar.zst"
+
+    def test_converts_absolute_windows_path_to_cygdrive(self, monkeypatch):
+        monkeypatch.setattr("zensync.transport.os.name", "nt")
+        path = r"C:\Users\Test\incoming\snapshot.tar.zst"
+        assert _rsync_local_path(path) == "/cygdrive/c/Users/Test/incoming/snapshot.tar.zst"
+
+    def test_normalizes_relative_windows_path_separators(self, monkeypatch):
+        monkeypatch.setattr("zensync.transport.os.name", "nt")
+        assert _rsync_local_path(r"relative\snapshot.json") == "relative/snapshot.json"
+
+
+class TestRsyncRemoteShell:
+    def test_prefers_bundled_ssh_next_to_windows_rsync(self, cfg, monkeypatch):
+        cfg.rsync_path = r"C:\Tools\cwRsync\bin\rsync.exe"
+        cfg.ssh_path = r"C:\Windows\System32\OpenSSH\ssh.exe"
+        monkeypatch.setattr("zensync.transport.os.name", "nt")
+
+        def fake_exists(self: Path) -> bool:
+            return str(self) == r"C:\Tools\cwRsync\bin\ssh.exe"
+
+        with patch("zensync.transport._resolve_tool", side_effect=lambda p: p), \
+                patch.object(Path, "exists", fake_exists):
+            remote_shell = _rsync_remote_shell(cfg)
+
+        assert remote_shell.startswith("/cygdrive/c/Tools/cwRsync/bin/ssh.exe ")
+        assert "StrictHostKeyChecking=accept-new" in remote_shell
+
+    def test_uses_configured_ssh_when_no_bundled_ssh_exists(self, cfg, monkeypatch):
+        cfg.rsync_path = r"C:\Tools\cwRsync\bin\rsync.exe"
+        cfg.ssh_path = r"C:\Windows\System32\OpenSSH\ssh.exe"
+        monkeypatch.setattr("zensync.transport.os.name", "nt")
+
+        with patch("zensync.transport._resolve_tool", side_effect=lambda p: p), \
+                patch.object(Path, "exists", return_value=False):
+            remote_shell = _rsync_remote_shell(cfg)
+
+        assert remote_shell.startswith("/cygdrive/c/Windows/System32/OpenSSH/ssh.exe ")
+        assert "StrictHostKeyChecking=accept-new" in remote_shell
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +271,26 @@ class TestUploadSnapshot:
         scp_calls = [c for c in calls_made if c[0] == "scp"]
         assert len(scp_calls) == 2
 
+    def test_uses_cygdrive_paths_for_windows_rsync_uploads(self, cfg, tmp_path, monkeypatch):
+        tarball = tmp_path / f"{SNAPSHOT_ID}.tar.zst"
+        manifest_p = tmp_path / f"{SNAPSHOT_ID}.json"
+        tarball.write_bytes(b"blob")
+        manifest_p.write_bytes(b"{}")
+        monkeypatch.setattr("zensync.transport.os.name", "nt")
+
+        rsync_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "rsync":
+                rsync_cmds.append(cmd)
+            return ok()
+
+        with patch("subprocess.run", side_effect=fake_run):
+            upload_snapshot(cfg, tarball, manifest_p, DEVICE_ID)
+
+        assert len(rsync_cmds) == 2
+        assert all(cmd[-2].startswith("/cygdrive/") for cmd in rsync_cmds)
+
 
 # ---------------------------------------------------------------------------
 # download_snapshot
@@ -286,6 +352,21 @@ class TestDownloadSnapshot:
 
         scp_calls = [c for c in calls_made if c[0] == "scp"]
         assert len(scp_calls) == 2
+
+    def test_uses_cygdrive_paths_for_windows_rsync_downloads(self, cfg, tmp_path, monkeypatch):
+        monkeypatch.setattr("zensync.transport.os.name", "nt")
+        rsync_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "rsync":
+                rsync_cmds.append(cmd)
+            return ok()
+
+        with patch("subprocess.run", side_effect=fake_run):
+            download_snapshot(cfg, SNAPSHOT_ID, DEVICE_ID, tmp_path / "dl")
+
+        assert len(rsync_cmds) == 2
+        assert all(cmd[-1].startswith("/cygdrive/") for cmd in rsync_cmds)
 
 
 # ---------------------------------------------------------------------------
