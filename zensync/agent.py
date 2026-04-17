@@ -37,6 +37,15 @@ def _setup_logging() -> None:
 # Transport helpers (called via asyncio.to_thread to stay non-blocking)
 # ---------------------------------------------------------------------------
 
+def _fire_remote_log(cfg: Config, state: State, event: str, detail: str = "") -> None:
+    """Best-effort hub log write. Never raises."""
+    from zensync.transport import remote_log
+    try:
+        remote_log(cfg, state.device_id, cfg.device_name or "unknown", event, detail)
+    except Exception:
+        pass
+
+
 def _do_hard_push(cfg: Config, profile, state: State, log: logging.Logger) -> Optional[object]:
     """Pack + upload + CAS pointer update.  Returns Manifest or None."""
     from zensync.transport import TransportError, push
@@ -181,6 +190,7 @@ async def _run_async(
 
     with ZenWatcher(profile) as watcher:
         log.info("Agent started. State: %s", sm.phase.value)
+        await asyncio.to_thread(_fire_remote_log, cfg, state, "agent_start")
 
         while True:
             now = time.monotonic()
@@ -201,6 +211,9 @@ async def _run_async(
                 )
                 if manifest:
                     log.info("Pushed  : %s", manifest.snapshot_id)
+                    asyncio.create_task(asyncio.to_thread(
+                        _fire_remote_log, cfg, state, "push", manifest.snapshot_id
+                    ))
                 sm.push_done()
                 # Check soft promotion after returning to IDLE.
                 await asyncio.to_thread(_maybe_promote_soft, cfg, state, log)
@@ -217,6 +230,10 @@ async def _run_async(
                 manifest = await asyncio.to_thread(_do_pull, cfg, profile, state, log)
                 if manifest:
                     log.info("Pulled  : %s  (%s)", manifest.snapshot_id, manifest.hostname)
+                    asyncio.create_task(asyncio.to_thread(
+                        _fire_remote_log, cfg, state, "pull",
+                        f"{manifest.snapshot_id} from {manifest.hostname}"
+                    ))
                 else:
                     log.info("Already up to date.")
                 _last_pull = time.monotonic()
@@ -229,6 +246,9 @@ async def _run_async(
                     )
                     if manifest:
                         log.info("Soft ckpt: %s", manifest.snapshot_id)
+                        asyncio.create_task(asyncio.to_thread(
+                            _fire_remote_log, cfg, state, "soft", manifest.snapshot_id
+                        ))
                     _last_soft = time.monotonic()
 
             await asyncio.sleep(_POLL_SECONDS)
@@ -246,3 +266,4 @@ def run(
         asyncio.run(_run_async(profile_path, cfg, log))
     except KeyboardInterrupt:
         log.info("Agent stopped.")
+        _fire_remote_log(cfg, state, "agent_stop")

@@ -393,6 +393,38 @@ def _push_pointer_with_retry(
             # Refresh expected_updated_at and retry.
 
 
+def remote_log(
+    cfg: Config,
+    device_id: str,
+    hostname: str,
+    event: str,
+    detail: str = "",
+) -> None:
+    """
+    Append a structured log entry to the hub's per-device JSONL log file.
+
+    Path: <hub_remote_root>/logs/<device_id>.jsonl
+    Best-effort: errors are silently swallowed so logging never breaks sync.
+    """
+    entry = json.dumps({
+        "ts": datetime.now(tz=timezone.utc).isoformat(),
+        "device_id": device_id,
+        "hostname": hostname,
+        "event": event,
+        "detail": detail,
+    })
+    log_dir = f"{cfg.hub_remote_root}/logs"
+    log_file = f"{log_dir}/{device_id}.jsonl"
+    try:
+        _run(
+            [cfg.ssh_path, _hub(cfg), f"mkdir -p {log_dir} && cat >> {log_file}"],
+            input=entry + "\n",
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def pull(
     cfg: Config,
     profile: ZenProfile,

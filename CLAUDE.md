@@ -213,6 +213,9 @@ Because writing to an active Zen profile corrupts it, and merging two live sessi
 │   │   └── 2026-04-14T101455Z-e5f6a7b8.json
 │   └── <other_device_id>/
 │       └── ...
+├── logs/
+│   ├── <device_id>.jsonl                          # per-device event log (push/pull/start/stop)
+│   └── <other_device_id>.jsonl
 └── tmp/
     └── <device_id>/                               # rsync upload staging
 ```
@@ -424,6 +427,10 @@ zensync restore <snapshot_id>   # download and apply a specific snapshot
 zensync restore --local latest  # roll back to the most recent local backup
 zensync resolve                 # interactive conflict resolution
 zensync launch [-- zen-args]    # pull then exec Zen; recommended shortcut target
+zensync log                     # live colored agent log for this device
+zensync hub-log                 # live colored log across ALL devices (reads Pi logs/)
+zensync upd                     # git pull + pip reinstall + symlink fix + restart agent
+zensync upd --pi                # also rsync updated Pi helper scripts
 zensync agent                   # run the long-lived agent (used by autostart)
 ```
 

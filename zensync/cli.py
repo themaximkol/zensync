@@ -585,6 +585,131 @@ def _show_mozlz4_diff(path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# hub-log
+# ---------------------------------------------------------------------------
+
+# Distinct ANSI colors for up to 8 devices; cycles if more.
+_DEVICE_COLORS = [
+    "\033[92m",  # bright green
+    "\033[94m",  # bright blue
+    "\033[95m",  # bright magenta
+    "\033[93m",  # bright yellow
+    "\033[96m",  # bright cyan
+    "\033[91m",  # bright red
+    "\033[97m",  # white
+    "\033[33m",  # orange-ish yellow
+]
+_EVENT_ICONS = {
+    "push":        "↑",
+    "pull":        "↓",
+    "soft":        "·",
+    "agent_start": "▶",
+    "agent_stop":  "■",
+}
+
+
+def _cmd_hub_log(args: argparse.Namespace) -> int:
+    import time as _time
+    import json as _json
+    from zensync.config import load as load_config
+    from zensync.transport import _hub, _run
+
+    cfg = load_config()
+    tty = sys.stdout.isatty()
+
+    RESET = "\033[0m" if tty else ""
+    BOLD  = "\033[1m" if tty else ""
+    DIM   = "\033[2m" if tty else ""
+
+    def _esc(s: str) -> str:
+        return s if tty else ""
+
+    # device_id → (hostname, color_str)
+    device_map: dict[str, tuple[str, str]] = {}
+    color_idx = 0
+
+    def _device_color(device_id: str, hostname: str) -> str:
+        nonlocal color_idx
+        if device_id not in device_map:
+            color = _esc(_DEVICE_COLORS[color_idx % len(_DEVICE_COLORS)])
+            device_map[device_id] = (hostname, color)
+            color_idx += 1
+        return device_map[device_id][1]
+
+    def _fetch_entries() -> list[dict]:
+        log_glob = f"{cfg.hub_remote_root}/logs/*.jsonl"
+        result = _run(
+            [cfg.ssh_path, _hub(cfg), f"cat {log_glob} 2>/dev/null || true"],
+            timeout=30,
+        )
+        entries = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(_json.loads(line))
+            except _json.JSONDecodeError:
+                pass
+        entries.sort(key=lambda e: e.get("ts", ""))
+        return entries
+
+    def _print_entry(e: dict) -> None:
+        ts       = e.get("ts", "")[:19].replace("T", " ")
+        dev_id   = e.get("device_id", "?")
+        hostname = e.get("hostname", dev_id[:8])
+        event    = e.get("event", "?")
+        detail   = e.get("detail", "")
+        color    = _device_color(dev_id, hostname)
+        icon     = _EVENT_ICONS.get(event, "?")
+        host_tag = f"{color}{BOLD}{hostname:<16}{RESET}"
+        ts_str   = f"{DIM}{ts}{RESET}"
+        if event in ("push", "pull"):
+            msg = f"{BOLD}{detail}{RESET}"
+        elif event == "soft":
+            msg = f"{DIM}{detail}{RESET}"
+        elif event == "agent_start":
+            msg = f"{color}agent started{RESET}"
+        elif event == "agent_stop":
+            msg = f"{DIM}agent stopped{RESET}"
+        else:
+            msg = detail or event
+        print(f"  {ts_str}  {host_tag}  {color}{icon}{RESET}  {msg}")
+
+    lines = getattr(args, "lines", None) or 100
+    follow = not getattr(args, "no_follow", False)
+
+    try:
+        entries = _fetch_entries()
+        shown_ts: str = ""
+        tail = entries[-lines:] if len(entries) > lines else entries
+        for e in tail:
+            _print_entry(e)
+            shown_ts = e.get("ts", shown_ts)
+
+        if not follow:
+            return 0
+
+        print(f"\n{DIM}Following hub log — Ctrl-C to stop{RESET}", flush=True)
+        while True:
+            _time.sleep(5)
+            fresh = _fetch_entries()
+            new = [e for e in fresh if e.get("ts", "") > shown_ts]
+            for e in new:
+                _print_entry(e)
+                shown_ts = e.get("ts", shown_ts)
+            sys.stdout.flush()
+
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # upd
 # ---------------------------------------------------------------------------
 
@@ -647,6 +772,26 @@ def _cmd_upd(args: argparse.Namespace) -> int:
         ok(f"version  {DIM}{version_before}{RESET} → {GREEN}{version_after}{RESET}")
     else:
         ok(f"version  {version_after}  (unchanged)")
+
+    # ── 1b. Ensure ~/.local/bin/zensync symlink is current ────────────────────
+    if sys.platform != "win32":
+        local_bin = Path.home() / ".local" / "bin"
+        local_bin.mkdir(parents=True, exist_ok=True)
+        symlink = local_bin / "zensync"
+        real_bin = Path(sys.executable).parent / "zensync"
+        if real_bin.exists():
+            try:
+                needs_link = (
+                    not symlink.exists()
+                    or symlink.resolve() != real_bin.resolve()
+                )
+                if needs_link:
+                    if symlink.is_symlink() or symlink.exists():
+                        symlink.unlink()
+                    symlink.symlink_to(real_bin)
+                    ok(f"linked ~/.local/bin/zensync → {real_bin}")
+            except OSError as exc:
+                warn(f"could not update ~/.local/bin/zensync: {exc}")
 
     # ── 2. Restart agent ──────────────────────────────────────────────────────
     if not getattr(args, "no_restart", False):
@@ -932,6 +1077,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-n", "--lines", type=int, metavar="N",
                    help="Number of recent lines to show (default: 500)")
 
+    # hub-log
+    p = sub.add_parser("hub-log", help="Show sync activity across all devices from the hub")
+    p.add_argument("--no-follow", action="store_true",
+                   help="Print recent entries and exit instead of following")
+    p.add_argument("-n", "--lines", type=int, metavar="N",
+                   help="Number of recent entries to show (default: 100)")
+
     # upd
     p = sub.add_parser("upd", help="Update zensync to the latest version from GitHub")
     p.add_argument("--pi", action="store_true",
@@ -951,17 +1103,18 @@ def main() -> None:
     args = parser.parse_args()
 
     dispatch = {
-        "status":  _cmd_status,
-        "push":    _cmd_push,
-        "pull":    _cmd_pull,
-        "apply":   _cmd_apply,
-        "launch":  _cmd_launch,
-        "resolve": _cmd_resolve,
-        "history": _cmd_history,
-        "restore": _cmd_restore,
-        "diff":    _cmd_diff,
-        "log":     _cmd_log,
-        "upd":     _cmd_upd,
+        "status":   _cmd_status,
+        "push":     _cmd_push,
+        "pull":     _cmd_pull,
+        "apply":    _cmd_apply,
+        "launch":   _cmd_launch,
+        "resolve":  _cmd_resolve,
+        "history":  _cmd_history,
+        "restore":  _cmd_restore,
+        "diff":     _cmd_diff,
+        "log":      _cmd_log,
+        "hub-log":  _cmd_hub_log,
+        "upd":      _cmd_upd,
     }
 
     if args.command in dispatch:

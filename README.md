@@ -126,8 +126,9 @@ zensync restore <snapshot_id>  download and apply a specific snapshot
 zensync restore --local        roll back to the most recent local backup
 zensync resolve                interactive conflict resolution
 zensync status                 show profile path, file sizes, agent state
-zensync log                    live colored agent log with session markers
-zensync upd                    update to latest version and restart agent
+zensync log                    live colored agent log for this device
+zensync hub-log                live colored log across ALL devices (reads hub logs/)
+zensync upd                    update, fix global symlink, restart agent
 zensync upd --pi               also push updated Pi scripts via SSH
 zensync agent                  run the background agent (used by autostart)
 ```
@@ -238,6 +239,8 @@ ssh = "ssh"
 │   └── <device_id>/
 │       ├── 2026-04-14T093122Z-a1b2c3d4.tar.zst
 │       └── 2026-04-14T093122Z-a1b2c3d4.json
+├── logs/
+│   └── <device_id>.jsonl                  ← per-device event log (push/pull/start/stop)
 └── tmp/
     └── <device_id>/                       ← rsync upload staging
 ```
@@ -257,11 +260,29 @@ To pull the latest code and restart the agent on a client:
 zensync upd
 ```
 
+`zensync upd` does everything in one shot: `git pull`, `pip install -e .`, ensures
+the `~/.local/bin/zensync` global symlink is current, and restarts the agent service.
+Run it whenever you update the repo on any device.
+
 To also push updated Pi helper scripts at the same time:
 
 ```bash
 zensync upd --pi
 ```
+
+### First-time global command setup
+
+The install script creates `~/.local/bin/zensync` as a symlink to the real binary
+(whether installed to a venv or with `--user`). If `~/.local/bin` is not yet on
+your `$PATH` (common on a fresh Raspberry Pi OS install), the installer will warn
+you. Fix it once with:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+After that, `zensync upd` keeps the symlink current automatically on every update.
 
 ---
 

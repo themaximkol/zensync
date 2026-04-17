@@ -136,6 +136,7 @@ if [[ $SETUP_HUB -eq 1 ]]; then
     install -d -m 700 -o "$HUB_USER" -g "$HUB_USER" "$DATA_DIR/snapshots"
     install -d -m 700 -o "$HUB_USER" -g "$HUB_USER" "$DATA_DIR/tmp"
     install -d -m 700 -o "$HUB_USER" -g "$HUB_USER" "$DATA_DIR/bin"
+    install -d -m 700 -o "$HUB_USER" -g "$HUB_USER" "$DATA_DIR/logs"
 
     if [[ ! -f "$DATA_DIR/latest.lock" ]]; then
         install -m 600 -o "$HUB_USER" -g "$HUB_USER" /dev/null "$DATA_DIR/latest.lock"
@@ -215,6 +216,21 @@ fi
 # If --user install, the binary may not exist yet — check common fallback.
 if [[ ! -f "$ZENSYNC_BIN" ]]; then
     ZENSYNC_BIN="$(_as_user command -v zensync 2>/dev/null || echo "$ZENSYNC_BIN")"
+fi
+
+# Symlink into ~/.local/bin so 'zensync' is on $PATH regardless of install mode.
+LOCAL_BIN="${REAL_HOME}/.local/bin"
+_as_user mkdir -p "$LOCAL_BIN"
+if [[ "$ZENSYNC_BIN" != "$LOCAL_BIN/zensync" ]]; then
+    _as_user ln -sf "$ZENSYNC_BIN" "$LOCAL_BIN/zensync"
+    echo "  [linked] $LOCAL_BIN/zensync → $ZENSYNC_BIN"
+fi
+
+# Warn if ~/.local/bin is not on PATH (fresh Raspberry Pi OS / Debian installs).
+if ! _as_user bash -lc 'echo "$PATH"' 2>/dev/null | tr ':' '\n' | grep -qx "$LOCAL_BIN"; then
+    echo "  [warn] $LOCAL_BIN is not yet on PATH"
+    echo "         Add to ~/.bashrc:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo "         Then run: source ~/.bashrc"
 fi
 
 echo "  [ok] zensync at $ZENSYNC_BIN"
