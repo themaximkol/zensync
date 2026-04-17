@@ -773,7 +773,7 @@ def _cmd_upd(args: argparse.Namespace) -> int:
     else:
         ok(f"version  {version_after}  (unchanged)")
 
-    # ── 1b. Ensure ~/.local/bin/zensync symlink is current ────────────────────
+    # ── 1b. Ensure ~/.local/bin/zensync symlink and PATH are current ─────────
     if sys.platform != "win32":
         local_bin = Path.home() / ".local" / "bin"
         local_bin.mkdir(parents=True, exist_ok=True)
@@ -792,6 +792,21 @@ def _cmd_upd(args: argparse.Namespace) -> int:
                     ok(f"linked ~/.local/bin/zensync → {real_bin}")
             except OSError as exc:
                 warn(f"could not update ~/.local/bin/zensync: {exc}")
+
+        # Ensure ~/.local/bin is in PATH in ~/.bashrc and current process.
+        path_line = 'export PATH="$HOME/.local/bin:$PATH"'
+        local_bin_str = str(local_bin)
+        if local_bin_str not in os.environ.get("PATH", "").split(os.pathsep):
+            bashrc = Path.home() / ".bashrc"
+            already_in_bashrc = (
+                bashrc.exists() and path_line in bashrc.read_text()
+            )
+            if not already_in_bashrc:
+                with bashrc.open("a") as f:
+                    f.write(f"\n# Added by zensync upd\n{path_line}\n")
+                ok(f"added ~/.local/bin to PATH in ~/.bashrc")
+            os.environ["PATH"] = local_bin_str + os.pathsep + os.environ.get("PATH", "")
+            warn("PATH updated for this session — open a new shell or run: source ~/.bashrc")
 
     # ── 2. Restart agent ──────────────────────────────────────────────────────
     if not getattr(args, "no_restart", False):
