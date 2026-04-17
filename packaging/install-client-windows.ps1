@@ -91,38 +91,40 @@ if (Test-Path $configFile) {
     $sshEscaped   = $ssh   -replace '\\', '\\'
     $hostname = $env:COMPUTERNAME
 
-    @"
-[hub]
-host = "$HubHost"
-user = "$HubUser"
-remote_root = "/var/lib/zensync"
-
-[device]
-id = "auto"
-name = "$hostname"
-
-[zen]
-profile_path = ""
-
-[sync]
-payload = [
-  "zen-session.jsonlz4",
-  "sessionstore.jsonlz4",
-  "containers.json",
-]
-soft_checkpoint_interval_seconds = 300
-idle_pull_interval_seconds = 900
-post_exit_grace_seconds = 5
-local_backup_keep = 10
-soft_promotion_after_hours = 24
-
-[conflict]
-policy = "prompt"
-
-[tools]
-rsync = "$rsyncEscaped"
-ssh   = "$sshEscaped"
-"@ | Set-Content -Encoding UTF8 $configFile
+    # Build config as an array of lines to avoid here-string LF/CRLF issues.
+    $lines = @(
+        "[hub]",
+        "host = ""$HubHost""",
+        "user = ""$HubUser""",
+        "remote_root = ""/var/lib/zensync""",
+        "",
+        "[device]",
+        "id = ""auto""",
+        "name = ""$hostname""",
+        "",
+        "[zen]",
+        "profile_path = """"",
+        "",
+        "[sync]",
+        "payload = [",
+        "  ""zen-session.jsonlz4"",",
+        "  ""sessionstore.jsonlz4"",",
+        "  ""containers.json"",",
+        "]",
+        "soft_checkpoint_interval_seconds = 300",
+        "idle_pull_interval_seconds = 900",
+        "post_exit_grace_seconds = 5",
+        "local_backup_keep = 10",
+        "soft_promotion_after_hours = 24",
+        "",
+        "[conflict]",
+        "policy = ""prompt""",
+        "",
+        "[tools]",
+        "rsync = ""$rsyncEscaped""",
+        "ssh   = ""$sshEscaped"""
+    )
+    $lines -join "`r`n" | Set-Content -Encoding UTF8 $configFile
 
     Write-Ok "Config written to $configFile"
 }
@@ -164,14 +166,13 @@ if ($existing) {
     Write-Ok "Agent started"
 }
 
-Write-Host @"
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Installation complete.
-
-Next steps:
-  1. Edit $configFile and verify hub.host.
-  2. Test:  zensync status
-  3. Use 'zensync launch' as your Zen Browser shortcut.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"@ -ForegroundColor White
+$bar = "━" * 79
+Write-Host ""
+Write-Host $bar -ForegroundColor White
+Write-Host "Installation complete." -ForegroundColor White
+Write-Host ""
+Write-Host "Next steps:" -ForegroundColor White
+Write-Host "  1. Edit $configFile and verify hub.host." -ForegroundColor White
+Write-Host "  2. Test:  zensync status" -ForegroundColor White
+Write-Host "  3. Use 'zensync launch' as your Zen Browser shortcut." -ForegroundColor White
+Write-Host $bar -ForegroundColor White

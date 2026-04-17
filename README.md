@@ -87,6 +87,24 @@ In PowerShell (normal user, not admin):
 .\packaging\install-client-windows.ps1 -HubHost <pi-tailscale-hostname>
 ```
 
+> **Script blocked?** Windows disables unsigned scripts by default. Fix it once with:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+> Or bypass for a single run without changing policy:
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File .\packaging\install-client-windows.ps1 -HubHost <pi-tailscale-hostname>
+> ```
+
+> **Script blocked?** Windows disables unsigned scripts by default. Fix it once with:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+> Or bypass for a single run without changing policy:
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File .\packaging\install-client-windows.ps1 -HubHost raspberrypi
+> ```
+
 Requirements: Python 3.11+ and [Git for Windows](https://git-scm.com) (which
 bundles `rsync.exe` and `ssh.exe`). The script detects them automatically.
 
@@ -104,7 +122,7 @@ Run these on each client after installation:
 zensync status          # profile discovered, payload files listed
 zensync push --dry-run  # pack snapshot, print manifest, discard (no network)
 zensync push            # real push — Pi must be reachable
-ssh zensync@<pi> cat /var/lib/zensync/latest.json  # confirm it landed
+ssh zensync@<pi-tailscale-hostname> cat /var/lib/zensync/latest.json  # confirm it landed
 zensync pull            # pull on another device
 zensync agent           # run agent interactively (Ctrl-C to stop)
 ```
