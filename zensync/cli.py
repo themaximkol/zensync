@@ -744,13 +744,26 @@ def _cmd_upd(args: argparse.Namespace) -> int:
     import zensync as _pkg
 
     tty = sys.stdout.isatty()
+    stdout_encoding = (sys.stdout.encoding or "").lower()
+    stderr_encoding = (sys.stderr.encoding or "").lower()
     def _esc(*c: int) -> str:
         return f"\033[{';'.join(str(x) for x in c)}m" if tty else ""
     RESET = _esc(0); BOLD = _esc(1); GREEN = _esc(92); YELLOW = _esc(93); RED = _esc(91); DIM = _esc(2)
 
-    def ok(msg: str)   -> None: print(f"  {GREEN}✓{RESET}  {msg}")
+    def _supports_text(stream_encoding: str, text: str) -> bool:
+        try:
+            text.encode(stream_encoding or "utf-8")
+            return True
+        except UnicodeEncodeError:
+            return False
+
+    ok_mark = "✓" if _supports_text(stdout_encoding, "✓") else "[ok]"
+    err_mark = "✗" if _supports_text(stderr_encoding, "✗") else "[error]"
+    arrow = "→" if _supports_text(stdout_encoding, "→") else "->"
+
+    def ok(msg: str)   -> None: print(f"  {GREEN}{ok_mark}{RESET}  {msg}")
     def warn(msg: str) -> None: print(f"  {YELLOW}!{RESET}  {msg}")
-    def err(msg: str)  -> None: print(f"  {RED}✗{RESET}  {msg}", file=sys.stderr)
+    def err(msg: str)  -> None: print(f"  {RED}{err_mark}{RESET}  {msg}", file=sys.stderr)
     def step(msg: str) -> None: print(f"\n{BOLD}{msg}{RESET}")
 
     repo_dir = Path(_pkg.__file__).parent.parent
@@ -795,7 +808,7 @@ def _cmd_upd(args: argparse.Namespace) -> int:
     importlib.reload(_pkg2)
     version_after = _pkg2.__version__
     if version_after != version_before:
-        ok(f"version  {DIM}{version_before}{RESET} → {GREEN}{version_after}{RESET}")
+        ok(f"version  {DIM}{version_before}{RESET} {arrow} {GREEN}{version_after}{RESET}")
     else:
         ok(f"version  {version_after}  (unchanged)")
 
@@ -837,14 +850,36 @@ def _cmd_upd(args: argparse.Namespace) -> int:
     # ── 2. Restart agent ──────────────────────────────────────────────────────
     if not getattr(args, "no_restart", False):
         step("Restarting agent…")
-        r = subprocess.run(
-            ["systemctl", "--user", "restart", "zensync-agent.service"],
-            capture_output=True, text=True,
-        )
-        if r.returncode == 0:
-            ok("zensync-agent.service restarted")
+        if sys.platform == "win32":
+            task_name = "ZenSync Agent"
+            query = subprocess.run(
+                ["schtasks", "/Query", "/TN", task_name],
+                capture_output=True, text=True,
+            )
+            if query.returncode != 0:
+                warn("ZenSync Agent scheduled task not found (OK if agent not installed yet)")
+            else:
+                subprocess.run(
+                    ["schtasks", "/End", "/TN", task_name],
+                    capture_output=True, text=True,
+                )
+                r = subprocess.run(
+                    ["schtasks", "/Run", "/TN", task_name],
+                    capture_output=True, text=True,
+                )
+                if r.returncode == 0:
+                    ok("ZenSync Agent scheduled task started")
+                else:
+                    warn("could not restart ZenSync Agent scheduled task")
         else:
-            warn("agent service not found or not running (OK if agent not installed yet)")
+            r = subprocess.run(
+                ["systemctl", "--user", "restart", "zensync-agent.service"],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0:
+                ok("zensync-agent.service restarted")
+            else:
+                warn("agent service not found or not running (OK if agent not installed yet)")
 
     # ── 3. Update Pi scripts ───────────────────────────────────────────────────
     if getattr(args, "pi", False):
