@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -58,6 +60,30 @@ def _hub(cfg: Config) -> str:
     return f"{cfg.hub_user}@{cfg.hub_host}"
 
 
+# Passed to every SSH call so Tailscale IP/hostname mismatches never prompt.
+_SSH_OPTS = ["-o", "StrictHostKeyChecking=accept-new"]
+
+
+def _resolve_tool(executable: str) -> str:
+    """
+    Return a runnable executable path.
+
+    This primarily helps on Windows when client.toml contains a stale absolute
+    path from an older rsync/ssh install but the tool is now available on PATH
+    or in the standard Git for Windows location.
+    """
+    if os.path.isabs(executable) and Path(executable).exists():
+        return executable
+    if any(sep in executable for sep in (os.path.sep, os.path.altsep, "\\", "/") if sep):
+        if found := shutil.which(Path(executable).name):
+            return found
+        if os.name == "nt":
+            candidate = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / Path(executable).name
+            if candidate.exists():
+                return str(candidate)
+    return executable
+
+
 def _run(
     cmd: list[str],
     input: Optional[str] = None,
@@ -68,6 +94,8 @@ def _run(
     Raises TransportError if the exit code is non-zero.
     The caller is responsible for special-casing exit code 1 (CAS) vs others.
     """
+    if cmd:
+        cmd = [_resolve_tool(cmd[0]), *cmd[1:]]
     try:
         return subprocess.run(
             cmd,
@@ -108,7 +136,7 @@ def read_latest(cfg: Config) -> Optional[dict]:
     on SSH failure.
     """
     result = _run(
-        [cfg.ssh_path, _hub(cfg), f"cat {cfg.hub_remote_root}/latest.json"],
+        [cfg.ssh_path, *_SSH_OPTS, _hub(cfg), f"cat {cfg.hub_remote_root}/latest.json"],
         timeout=30,
     )
     if result.returncode == 0:
@@ -134,7 +162,7 @@ def read_latest(cfg: Config) -> Optional[dict]:
 def ensure_device_dirs(cfg: Config, device_id: str) -> None:
     """Create snapshots/<device_id>/ and tmp/<device_id>/ on the hub if absent."""
     _run_strict([
-        cfg.ssh_path,
+        cfg.ssh_path, *_SSH_OPTS,
         _hub(cfg),
         (
             f"mkdir -p "
@@ -163,16 +191,18 @@ def upload_snapshot(
     remote_tmp = f"{cfg.hub_remote_root}/tmp/{device_id}"
     remote_snap = f"{cfg.hub_remote_root}/snapshots/{device_id}"
 
+    ssh_e = f"ssh {' '.join(_SSH_OPTS)}"
     for local in (tarball, manifest_path):
         _run_strict([
             cfg.rsync_path, "-a", "--partial", "--partial-dir=.rsync-partial",
+            "-e", ssh_e,
             str(local),
             f"{hub}:{remote_tmp}/{local.name}",
         ])
 
     for fname in (tarball.name, manifest_path.name):
         _run_strict([
-            cfg.ssh_path, hub,
+            cfg.ssh_path, *_SSH_OPTS, hub,
             f"mv {remote_tmp}/{fname} {remote_snap}/{fname}",
         ])
 
@@ -195,12 +225,14 @@ def download_snapshot(
     tarball = dest_dir / f"{snapshot_id}.tar.zst"
     manifest = dest_dir / f"{snapshot_id}.json"
 
+    ssh_e = f"ssh {' '.join(_SSH_OPTS)}"
     for remote_name, local in (
         (f"{snapshot_id}.tar.zst", tarball),
         (f"{snapshot_id}.json", manifest),
     ):
         _run_strict([
             cfg.rsync_path, "-a",
+            "-e", ssh_e,
             f"{hub}:{remote_dir}/{remote_name}",
             str(local),
         ])
@@ -230,7 +262,7 @@ def update_latest_pointer(
         cmd_parts.append(f"--expected-updated-at {expected_updated_at}")
 
     result = _run(
-        [cfg.ssh_path, _hub(cfg), " ".join(cmd_parts)],
+        [cfg.ssh_path, *_SSH_OPTS, _hub(cfg), " ".join(cmd_parts)],
         input=json.dumps(new_pointer),
         timeout=30,
     )
@@ -259,7 +291,7 @@ def list_manifests(cfg: Config, device_id: Optional[str] = None) -> list[dict]:
         else f"{cfg.hub_remote_root}/snapshots/*/*.json"
     )
     result = _run(
-        [cfg.ssh_path, _hub(cfg), f"ls -1 {glob} 2>/dev/null || true"],
+        [cfg.ssh_path, *_SSH_OPTS, _hub(cfg), f"ls -1 {glob} 2>/dev/null || true"],
         timeout=30,
     )
     if result.returncode != 0:
@@ -271,7 +303,7 @@ def list_manifests(cfg: Config, device_id: Optional[str] = None) -> list[dict]:
     manifests: list[dict] = []
     for remote_path in sorted(paths):
         r = _run(
-            [cfg.ssh_path, _hub(cfg), f"cat {remote_path}"],
+            [cfg.ssh_path, *_SSH_OPTS, _hub(cfg), f"cat {remote_path}"],
             timeout=15,
         )
         if r.returncode == 0:
@@ -427,7 +459,7 @@ def remote_log(
         f"(mkdir -p {_HUB_LOG_RAM_DIR} && cat >> {ram_file})"
     )
     try:
-        _run([cfg.ssh_path, _hub(cfg), cmd], input=entry + "\n", timeout=10)
+        _run([cfg.ssh_path, *_SSH_OPTS, _hub(cfg), cmd], input=entry + "\n", timeout=10)
     except Exception:
         pass
 
@@ -440,14 +472,14 @@ def hub_log_set_enabled(cfg: Config, enabled: bool) -> None:
         cmd = f"rm -f {sentinel}"
     else:
         cmd = f"mkdir -p {log_dir} && touch {sentinel}"
-    _run_strict([cfg.ssh_path, _hub(cfg), cmd], timeout=15)
+    _run_strict([cfg.ssh_path, *_SSH_OPTS, _hub(cfg), cmd], timeout=15)
 
 
 def hub_log_is_enabled(cfg: Config) -> bool:
     """Return True if hub logging is currently active (no .disabled sentinel)."""
     sentinel = f"{cfg.hub_remote_root}/logs/.disabled"
     result = _run(
-        [cfg.ssh_path, _hub(cfg), f"test -f {sentinel} && echo disabled || echo enabled"],
+        [cfg.ssh_path, *_SSH_OPTS, _hub(cfg), f"test -f {sentinel} && echo disabled || echo enabled"],
         timeout=15,
     )
     return result.stdout.strip() != "disabled"

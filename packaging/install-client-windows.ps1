@@ -107,8 +107,6 @@ New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 if (Test-Path $configFile) {
     Write-Ok "$configFile already exists -- skipping"
 } else {
-    $rsyncVal = $rsync -replace '\\', '\\'
-    $sshVal   = $ssh   -replace '\\', '\\'
     $hostname = $env:COMPUTERNAME
     $nl = "`r`n"
     $config  = "[hub]$nl"
@@ -140,8 +138,8 @@ if (Test-Path $configFile) {
     $config += "policy = `"prompt`"$nl"
     $config += "$nl"
     $config += "[tools]$nl"
-    $config += "rsync = `"$rsyncVal`"$nl"
-    $config += "ssh   = `"$sshVal`"$nl"
+    $config += "rsync = '$rsync'$nl"
+    $config += "ssh   = '$ssh'$nl"
     [System.IO.File]::WriteAllText($configFile, $config, (New-Object System.Text.UTF8Encoding $false))
     Write-Ok "Config written to $configFile"
 }

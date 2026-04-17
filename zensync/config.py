@@ -25,6 +25,10 @@ def _default_config_dir() -> Path:
 DEFAULT_CONFIG_PATH = _default_config_dir() / "client.toml"
 
 
+class ConfigError(Exception):
+    """Configuration file is invalid or cannot be parsed."""
+
+
 @dataclass
 class Config:
     # [hub]
@@ -65,8 +69,14 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     if not path.is_file():
         return Config()
 
-    with open(path, "rb") as fh:
-        raw = tomllib.load(fh)
+    try:
+        with open(path, "rb") as fh:
+            raw = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        hint = ""
+        if sys.platform == "win32":
+            hint = " On Windows, escape backslashes or use single-quoted literal strings for paths."
+        raise ConfigError(f"Invalid config file {path}: {exc}.{hint}") from exc
 
     cfg = Config()
 

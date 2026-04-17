@@ -5,6 +5,7 @@ run without a real Pi / network.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -19,6 +20,7 @@ from zensync.transport import (
     CASError,
     HubUnreachableError,
     TransportError,
+    _run,
     download_snapshot,
     ensure_device_dirs,
     read_latest,
@@ -67,6 +69,19 @@ def fail(returncode: int = 1, stderr: str = "error") -> MagicMock:
     m.stdout = ""
     m.stderr = stderr
     return m
+
+
+class TestRunFallback:
+    def test_falls_back_to_path_when_absolute_tool_path_is_stale(self, monkeypatch):
+        stale = r"C:\Program Files\cwRsync\usr\bin\ssh.exe"
+        monkeypatch.setattr(os.path, "isabs", lambda p: p == stale)
+
+        with patch("zensync.transport.Path.exists", return_value=False), \
+                patch("zensync.transport.shutil.which", return_value=r"C:\Program Files\Git\usr\bin\ssh.exe"), \
+                patch("subprocess.run", return_value=ok()) as mock_run:
+            _run([stale, "--version"])
+
+        assert mock_run.call_args[0][0][0].endswith(r"Git\usr\bin\ssh.exe")
 
 
 # ---------------------------------------------------------------------------

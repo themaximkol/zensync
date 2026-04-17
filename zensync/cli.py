@@ -612,7 +612,7 @@ def _cmd_hub_log(args: argparse.Namespace) -> int:
     import time as _time
     import json as _json
     from zensync.config import load as load_config
-    from zensync.transport import _hub, _run, hub_log_set_enabled, hub_log_is_enabled, TransportError
+    from zensync.transport import _hub, _run, _SSH_OPTS, hub_log_set_enabled, hub_log_is_enabled, TransportError
 
     cfg = load_config()
 
@@ -664,7 +664,7 @@ def _cmd_hub_log(args: argparse.Namespace) -> int:
         persist_glob = f"{cfg.hub_remote_root}/logs/*.jsonl"
         ram_glob = f"{_HUB_LOG_RAM_DIR}/*.jsonl"
         result = _run(
-            [cfg.ssh_path, _hub(cfg),
+            [cfg.ssh_path, *_SSH_OPTS, _hub(cfg),
              f"cat {ram_glob} {persist_glob} 2>/dev/null || true"],
             timeout=30,
         )
@@ -850,12 +850,14 @@ def _cmd_upd(args: argparse.Namespace) -> int:
     if getattr(args, "pi", False):
         step("Updating Pi helper scripts…")
         from zensync.config import load as load_config
+        from zensync.transport import _SSH_OPTS
         cfg = load_config()
         hub = f"{cfg.hub_user}@{cfg.hub_host}"
         remote_bin = f"{cfg.hub_remote_root}/bin"
 
         scripts = ["zensync-update-pointer", "zensync-prune"]
         any_fail = False
+        ssh_e = f"ssh {' '.join(_SSH_OPTS)}"
 
         for script in scripts:
             src = repo_dir / "pi" / script
@@ -863,7 +865,7 @@ def _cmd_upd(args: argparse.Namespace) -> int:
                 warn(f"{script} not found in repo/pi/ — skipping")
                 continue
             r = subprocess.run(
-                [cfg.rsync_path, "-a", str(src), f"{hub}:{remote_bin}/{script}"],
+                [cfg.rsync_path, "-a", "-e", ssh_e, str(src), f"{hub}:{remote_bin}/{script}"],
                 capture_output=True, text=True,
             )
             if r.returncode == 0:
@@ -875,7 +877,7 @@ def _cmd_upd(args: argparse.Namespace) -> int:
         if not any_fail:
             # Ensure executable bits are set (rsync preserves them, but belt-and-suspenders)
             subprocess.run(
-                [cfg.ssh_path, hub, f"chmod 755 {remote_bin}/zensync-update-pointer {remote_bin}/zensync-prune"],
+                [cfg.ssh_path, *_SSH_OPTS, hub, f"chmod 755 {remote_bin}/zensync-update-pointer {remote_bin}/zensync-prune"],
                 capture_output=True,
             )
             ok("permissions set")
@@ -1143,6 +1145,8 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    from zensync.config import ConfigError
+
     parser = build_parser()
     args = parser.parse_args()
 
@@ -1161,16 +1165,20 @@ def main() -> None:
         "upd":      _cmd_upd,
     }
 
-    if args.command in dispatch:
-        sys.exit(dispatch[args.command](args))
-    elif args.command == "agent":
-        from zensync.agent import run as run_agent
-        profile_path = Path(args.profile) if args.profile else None
-        run_agent(profile_path=profile_path)
-        sys.exit(0)
-    else:
-        parser.print_help()
-        sys.exit(0)
+    try:
+        if args.command in dispatch:
+            sys.exit(dispatch[args.command](args))
+        elif args.command == "agent":
+            from zensync.agent import run as run_agent
+            profile_path = Path(args.profile) if args.profile else None
+            run_agent(profile_path=profile_path)
+            sys.exit(0)
+        else:
+            parser.print_help()
+            sys.exit(0)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
