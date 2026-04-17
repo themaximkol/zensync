@@ -90,42 +90,41 @@ if (Test-Path $configFile) {
     $rsyncEscaped = $rsync -replace '\\', '\\'
     $sshEscaped   = $ssh   -replace '\\', '\\'
     $hostname = $env:COMPUTERNAME
+    $nl = "`r`n"
 
-    # Build config as an array of lines to avoid here-string LF/CRLF issues.
-    $lines = @(
-        "[hub]",
-        "host = ""$HubHost""",
-        "user = ""$HubUser""",
-        "remote_root = ""/var/lib/zensync""",
-        "",
-        "[device]",
-        "id = ""auto""",
-        "name = ""$hostname""",
-        "",
-        "[zen]",
-        "profile_path = """"",
-        "",
-        "[sync]",
-        "payload = [",
-        "  ""zen-session.jsonlz4"",",
-        "  ""sessionstore.jsonlz4"",",
-        "  ""containers.json"",",
-        "]",
-        "soft_checkpoint_interval_seconds = 300",
-        "idle_pull_interval_seconds = 900",
-        "post_exit_grace_seconds = 5",
-        "local_backup_keep = 10",
-        "soft_promotion_after_hours = 24",
-        "",
-        "[conflict]",
-        "policy = ""prompt""",
-        "",
-        "[tools]",
-        "rsync = ""$rsyncEscaped""",
-        "ssh   = ""$sshEscaped"""
-    )
-    $lines -join "`r`n" | Set-Content -Encoding UTF8 $configFile
+    $config  = "[hub]$nl"
+    $config += "host = `"$HubHost`"$nl"
+    $config += "user = `"$HubUser`"$nl"
+    $config += "remote_root = `"/var/lib/zensync`"$nl"
+    $config += "$nl"
+    $config += "[device]$nl"
+    $config += "id = `"auto`"$nl"
+    $config += "name = `"$hostname`"$nl"
+    $config += "$nl"
+    $config += "[zen]$nl"
+    $config += "profile_path = `"`"$nl"
+    $config += "$nl"
+    $config += "[sync]$nl"
+    $config += "payload = [$nl"
+    $config += "  `"zen-sessions.jsonlz4`",$nl"
+    $config += "  `"zen-live-folders.jsonlz4`",$nl"
+    $config += "  `"sessionstore.jsonlz4`",$nl"
+    $config += "  `"containers.json`",$nl"
+    $config += "]$nl"
+    $config += "soft_checkpoint_interval_seconds = 300$nl"
+    $config += "idle_pull_interval_seconds = 900$nl"
+    $config += "post_exit_grace_seconds = 5$nl"
+    $config += "local_backup_keep = 10$nl"
+    $config += "soft_promotion_after_hours = 24$nl"
+    $config += "$nl"
+    $config += "[conflict]$nl"
+    $config += "policy = `"prompt`"$nl"
+    $config += "$nl"
+    $config += "[tools]$nl"
+    $config += "rsync = `"$rsyncEscaped`"$nl"
+    $config += "ssh   = `"$sshEscaped`"$nl"
 
+    [System.IO.File]::WriteAllText($configFile, $config, (New-Object System.Text.UTF8Encoding $false))
     Write-Ok "Config written to $configFile"
 }
 
