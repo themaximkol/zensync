@@ -12,7 +12,7 @@ from platformdirs import user_config_dir
 
 from zensync.profile import PAYLOAD_OPTIONAL, PAYLOAD_REQUIRED
 
-DEFAULT_CONFIG_PATH = Path(user_config_dir("zensync")) / "client.toml"
+DEFAULT_CONFIG_PATH = Path(user_config_dir("zensync", roaming=True)) / "client.toml"
 
 
 @dataclass

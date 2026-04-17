@@ -88,11 +88,13 @@ if ($pyScripts -and (Test-Path $pyScripts)) {
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     if ($userPath -notlike "*$pyScripts*") {
         [Environment]::SetEnvironmentVariable("PATH", "$pyScripts;$userPath", "User")
-        $env:PATH = "$pyScripts;$env:PATH"
         Write-Ok "Added $pyScripts to PATH"
-        Write-Warn "Open a new terminal for PATH changes to take effect"
     } else {
-        Write-Ok "Scripts directory already on PATH"
+        Write-Ok "Scripts directory on PATH"
+    }
+    if ($env:PATH -notlike "*$pyScripts*") {
+        $env:PATH = "$pyScripts;$env:PATH"
+        Write-Ok "Updated PATH for this session"
     }
 }
 
