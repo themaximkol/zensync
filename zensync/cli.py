@@ -12,6 +12,74 @@ from pathlib import Path
 from zensync import __version__
 
 
+_CONSOLE_ASCII_REPLACEMENTS = str.maketrans({
+    "—": "-",
+    "…": "...",
+    "→": "->",
+    "←": "<-",
+    "↑": "^",
+    "↓": "v",
+    "·": "-",
+    "✓": "[ok]",
+    "✗": "[error]",
+    "■": "*",
+    "▶": ">",
+    "─": "-",
+    "━": "-",
+    "┄": "-",
+})
+
+
+class _ConsoleSanitizingStream:
+    def __init__(self, stream):
+        self._stream = stream
+
+    @property
+    def encoding(self):
+        return getattr(self._stream, "encoding", None)
+
+    def write(self, text):
+        if isinstance(text, str):
+            text = text.translate(_CONSOLE_ASCII_REPLACEMENTS)
+        return self._stream.write(text)
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
+    def flush(self):
+        return self._stream.flush()
+
+    def isatty(self):
+        return self._stream.isatty()
+
+    def fileno(self):
+        return self._stream.fileno()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _stream_supports_text(stream, sample: str) -> bool:
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    try:
+        sample.encode(encoding)
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _install_console_sanitizer() -> None:
+    if sys.platform != "win32":
+        return
+
+    sample = "—…→←↑↓·✓✗■▶─━┄"
+    if not _stream_supports_text(sys.stdout, sample):
+        sys.stdout = _ConsoleSanitizingStream(sys.stdout)
+    if not _stream_supports_text(sys.stderr, sample):
+        sys.stderr = _ConsoleSanitizingStream(sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
@@ -1181,6 +1249,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     from zensync.config import ConfigError
+
+    _install_console_sanitizer()
 
     parser = build_parser()
     args = parser.parse_args()
