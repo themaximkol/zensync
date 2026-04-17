@@ -82,6 +82,20 @@ if (Test-Path "$parentDir\pyproject.toml") {
 }
 Write-Ok "zensync installed"
 
+# ── Ensure Scripts directory is on PATH ───────────────────────────────────────
+$pyScripts = & python -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>$null
+if ($pyScripts -and (Test-Path $pyScripts)) {
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    if ($userPath -notlike "*$pyScripts*") {
+        [Environment]::SetEnvironmentVariable("PATH", "$pyScripts;$userPath", "User")
+        $env:PATH = "$pyScripts;$env:PATH"
+        Write-Ok "Added $pyScripts to PATH"
+        Write-Warn "Open a new terminal for PATH changes to take effect"
+    } else {
+        Write-Ok "Scripts directory already on PATH"
+    }
+}
+
 # ── Write config ──────────────────────────────────────────────────────────────
 Write-Step "Writing client configuration..."
 $configDir  = "$env:APPDATA\zensync"
@@ -149,7 +163,7 @@ if ($existing) {
     $action   = New-ScheduledTaskAction -Execute "pythonw.exe" -Argument "-m zensync agent"
     $trigger  = New-ScheduledTaskTrigger -AtLogon
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force | Out-Null
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
     Write-Ok "Scheduled Task '$taskName' registered"
     Start-ScheduledTask -TaskName $taskName
     Write-Ok "Agent started"
