@@ -352,3 +352,72 @@ class TestProfileLock:
 
         with _profile_lock(profile_root):
             assert lock_path.read_text() == str(os.getpid())
+
+
+# ---------------------------------------------------------------------------
+# Denylist enforcement (user.js / prefs.js must never be synced)
+# ---------------------------------------------------------------------------
+
+class TestDenylist:
+    def test_pack_never_includes_denied_files(self, tmp_path):
+        profile = make_profile(tmp_path)
+        # Even if a caller explicitly asks to pack prefs.js / user.js, they
+        # must be dropped before the tarball is built.
+        (profile.root / "prefs.js").write_bytes(b"user_pref('x', 1);")
+        (profile.root / "user.js").write_bytes(b"user_pref('y', 2);")
+        names = list(PAYLOAD_REQUIRED) + ["prefs.js", "user.js"]
+        _, manifest = pack_profile(profile, tmp_path / "stage", names=names)
+        assert "prefs.js" not in manifest.payload_files
+        assert "user.js" not in manifest.payload_files
+        assert "zen-sessions.jsonlz4" in manifest.payload_files
+
+    def test_sanitize_payload_matches_basename_case_insensitively(self):
+        from zensync.profile import sanitize_payload
+        kept = sanitize_payload(
+            ["zen-sessions.jsonlz4", "USER.JS", "sub/prefs.js", "containers.json"]
+        )
+        assert kept == ["zen-sessions.jsonlz4", "containers.json"]
+
+
+# ---------------------------------------------------------------------------
+# Apply clears stale recovery/backup copies so Zen reads the applied session
+# ---------------------------------------------------------------------------
+
+class TestStaleSessionCleanup:
+    def test_apply_removes_shadowing_recovery_files(self, tmp_path):
+        profile = make_profile(tmp_path)
+        # Seed stale companions the target would otherwise restore from.
+        (profile.root / "sessionstore-backups").mkdir()
+        (profile.root / "zen-sessions-backup").mkdir()
+        stale = {
+            "sessionstore-backups/recovery.jsonlz4": b"OLD-ff-recovery",
+            "sessionstore-backups/recovery.baklz4": b"OLD-ff-recovery-bak",
+            "sessionstore-backups/previous.jsonlz4": b"OLD-ff-previous",
+            "sessionCheckpoints.json": b"{}",
+            "zen-sessions-backup/recovery.jsonlz4": b"OLD-zen-recovery",
+            "zen-sessions-backup/clean.jsonlz4": b"OLD-zen-clean",
+        }
+        for rel, data in stale.items():
+            (profile.root / rel).write_bytes(data)
+
+        staging = tmp_path / "stage"
+        tarball, manifest = pack_profile(profile, staging)
+        apply(tarball, manifest, profile)
+
+        # Every stale companion tied to an applied clean file is gone...
+        for rel in stale:
+            assert not (profile.root / rel).exists(), rel
+        # ...but preserved in the local backup so apply stays reversible.
+        backups = list((profile.root / ".zensync-backup").iterdir())
+        assert len(backups) == 1
+        saved = backups[0] / "sessionstore-backups/recovery.jsonlz4"
+        assert saved.read_bytes() == b"OLD-ff-recovery"
+
+    def test_apply_leaves_unrelated_files_untouched(self, tmp_path):
+        profile = make_profile(tmp_path)
+        keep = profile.root / "zen-keyboard-shortcuts.json"
+        keep.write_bytes(b"shortcuts")
+        staging = tmp_path / "stage"
+        tarball, manifest = pack_profile(profile, staging)
+        apply(tarball, manifest, profile)
+        assert keep.read_bytes() == b"shortcuts"

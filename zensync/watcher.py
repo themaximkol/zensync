@@ -28,7 +28,7 @@ _ZEN_NAMES: dict[str, tuple[str, ...]] = {
 # Profile-relative files whose modification marks the payload as dirty.
 # recovery.jsonlz4 lives inside sessionstore-backups/, watched recursively.
 _WATCHED_FILES = frozenset({
-    "zen-session.jsonlz4",
+    "zen-sessions.jsonlz4",
     "recovery.jsonlz4",
 })
 
@@ -136,7 +136,7 @@ class ZenWatcher:
     """
     Watches the Zen profile directory for changes to session files.
 
-    Sets an internal dirty flag when ``zen-session.jsonlz4`` or
+    Sets an internal dirty flag when ``zen-sessions.jsonlz4`` or
     ``recovery.jsonlz4`` (inside ``sessionstore-backups/``) are written.
 
     Usage::

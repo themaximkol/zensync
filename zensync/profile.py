@@ -35,6 +35,58 @@ PAYLOAD_DIRS: tuple[str, ...] = (
     "sessionstore-backups",
 )
 
+# Files that must NEVER be synced, enforced regardless of what client.toml
+# lists. prefs.js / user.js carry device-specific settings (hardware
+# acceleration, GPU flags, cache sizing, absolute paths); transplanting them
+# across machines has corrupted performance on the target. The credential and
+# database stores are device-local and sensitive. Matched case-insensitively
+# against the basename, so a backups/ subdir copy is caught too.
+PAYLOAD_DENY: frozenset[str] = frozenset({
+    "user.js",
+    "prefs.js",
+    "xulstore.json",
+    "key4.db",
+    "logins.json",
+    "cert9.db",
+    "cookies.sqlite",
+    "places.sqlite",
+    "favicons.sqlite",
+    "formhistory.sqlite",
+    "webappsstore.sqlite",
+})
+
+# On apply, the TARGET profile keeps its own crash-recovery and rolling-backup
+# copies of the session. Firefox/Zen restore from sessionstore-backups/
+# recovery.jsonlz4 (and the Zen equivalents) whenever the prior shutdown was
+# not seen as clean, so a stale recovery file shadows the clean files we just
+# wrote and the browser shows old tabs even though the bytes on disk are
+# correct. After writing each clean file we remove its stale companions so
+# Zen is forced to read the session we applied. Keyed: clean payload file ->
+# profile-relative companions to clear (POSIX paths).
+SESSION_STALE_ON_APPLY: dict[str, tuple[str, ...]] = {
+    "sessionstore.jsonlz4": (
+        "sessionstore-backups/recovery.jsonlz4",
+        "sessionstore-backups/recovery.baklz4",
+        "sessionstore-backups/previous.jsonlz4",
+        "sessionCheckpoints.json",
+    ),
+    "zen-sessions.jsonlz4": (
+        "zen-sessions-backup/recovery.jsonlz4",
+        "zen-sessions-backup/recovery.baklz4",
+        "zen-sessions-backup/clean.jsonlz4",
+    ),
+}
+
+
+def sanitize_payload(names: list[str]) -> list[str]:
+    """
+    Drop any denied files from a payload list (case-insensitive basename
+    match). Order is preserved. Use everywhere a payload list is accepted so
+    a stray ``user.js`` in config or an explicit argument can never be packed.
+    """
+    deny = {d.lower() for d in PAYLOAD_DENY}
+    return [n for n in names if Path(n).name.lower() not in deny]
+
 
 @dataclass
 class PayloadEntry:

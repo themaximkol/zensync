@@ -13,7 +13,11 @@ from pathlib import Path
 
 from platformdirs import user_config_dir
 
-from zensync.profile import PAYLOAD_OPTIONAL, PAYLOAD_REQUIRED
+from zensync.profile import (
+    PAYLOAD_OPTIONAL,
+    PAYLOAD_REQUIRED,
+    sanitize_payload,
+)
 
 
 def _default_config_dir() -> Path:
@@ -145,6 +149,20 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     sync = raw.get("sync", {})
     cfg.payload = sync.get("payload", cfg.payload)
     cfg.optional_payload = sync.get("optional_payload", cfg.optional_payload)
+
+    # Strip any denied files (e.g. user.js / prefs.js) regardless of what the
+    # config lists — these are device-specific and must never cross machines.
+    for attr in ("payload", "optional_payload"):
+        before = list(getattr(cfg, attr))
+        after = sanitize_payload(before)
+        if after != before:
+            removed = [n for n in before if n not in after]
+            print(
+                f"zensync: ignoring non-syncable file(s) in [sync] {attr}: "
+                f"{', '.join(removed)}",
+                file=sys.stderr,
+            )
+        setattr(cfg, attr, after)
     cfg.soft_checkpoint_interval_seconds = sync.get(
         "soft_checkpoint_interval_seconds", cfg.soft_checkpoint_interval_seconds
     )

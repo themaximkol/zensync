@@ -26,7 +26,12 @@ from typing import Optional
 
 import zstandard
 
-from zensync.profile import PAYLOAD_REQUIRED, ZenProfile
+from zensync.profile import (
+    PAYLOAD_REQUIRED,
+    SESSION_STALE_ON_APPLY,
+    ZenProfile,
+    sanitize_payload,
+)
 
 ZSTD_LEVEL = 3          # fast compression; session files compress well
 SNAPSHOT_HASH_LEN = 8   # chars from content_hash used in snapshot_id
@@ -124,6 +129,7 @@ def pack(
     if names is None:
         names = list(PAYLOAD_REQUIRED)
 
+    names = sanitize_payload(names)
     to_pack = [n for n in sorted(names) if (profile.root / n).is_file()]
     if not to_pack:
         raise ValueError(f"No payload files found in {profile.root}")
@@ -261,8 +267,40 @@ def apply(
         finally:
             shutil.rmtree(str(incoming), ignore_errors=True)
 
+        # Step 4b: clear the target's stale recovery/backup copies of any
+        # session file we just applied. Otherwise Zen restores from its own
+        # sessionstore-backups/recovery.jsonlz4 (or the Zen equivalent) and
+        # shows old tabs despite the clean file being correct on disk. Each
+        # removed file is first copied into the step-2 backup dir so the apply
+        # stays reversible.
+        _clear_stale_session_files(profile.root, manifest.payload_files, backup_dir)
+
         # Step 5: prune old backups
         _prune_backups(backup_base, keep=local_backup_keep)
+
+
+def _clear_stale_session_files(
+    profile_root: Path,
+    applied: list[str],
+    backup_dir: Path,
+) -> None:
+    """
+    Remove recovery/rolling-backup companions that would shadow a freshly
+    applied clean session file. Only companions tied to a file actually present
+    in ``applied`` are touched. Removed files are backed up under
+    ``backup_dir`` (mirroring their profile-relative path) before deletion.
+    """
+    for clean_name, companions in SESSION_STALE_ON_APPLY.items():
+        if clean_name not in applied:
+            continue
+        for rel in companions:
+            target = profile_root / rel
+            if not target.is_file():
+                continue
+            saved = backup_dir / rel
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(target), str(saved))
+            target.unlink()
 
 
 def _prune_backups(backup_base: Path, keep: int) -> None:
