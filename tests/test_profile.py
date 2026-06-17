@@ -15,8 +15,10 @@ from zensync.profile import (
     PayloadEntry,
     ProfileNotFoundError,
     ZenProfile,
+    _auto_discover,
     _find_default_profile,
     _parse_profiles_ini,
+    _profile_last_used,
     _profile_section_path,
     _zen_root_candidates,
     discover,
@@ -323,8 +325,10 @@ class TestZenRootCandidates:
             pytest.skip("Linux only")
         candidates = _zen_root_candidates()
         native = Path.home() / ".zen"
+        config_native = Path.home() / ".config" / "zen"
         flatpak = Path.home() / ".var" / "app" / "app.zen_browser.zen" / ".zen"
         assert native in candidates
+        assert config_native in candidates
         assert flatpak in candidates
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
@@ -332,3 +336,48 @@ class TestZenRootCandidates:
         candidates = _zen_root_candidates()
         appdata = os.environ.get("APPDATA", "")
         assert any(str(c).lower().startswith(appdata.lower()) for c in candidates)
+
+
+# ---------------------------------------------------------------------------
+# Multiple coexisting installs — pick the most recently used profile
+# ---------------------------------------------------------------------------
+
+class TestMultiInstallSelection:
+    def _make_install(self, root: Path, profile_name: str, session_mtime: float):
+        """Create a Zen root with profiles.ini and one default profile dir."""
+        root.mkdir(parents=True, exist_ok=True)
+        prof = root / profile_name
+        prof.mkdir(parents=True, exist_ok=True)
+        write_ini(
+            root / "profiles.ini",
+            f"[Install1]\nDefault={profile_name}\n\n"
+            f"[Profile0]\nName=Default\nIsRelative=1\nPath={profile_name}\n",
+        )
+        sess = prof / "zen-sessions.jsonlz4"
+        sess.write_bytes(b"x")
+        os.utime(sess, (session_mtime, session_mtime))
+        return prof
+
+    def test_picks_most_recently_used_when_two_installs(self, tmp_path, monkeypatch):
+        stale = self._make_install(tmp_path / "flatpak", "aaa.Default (release)", 1_000.0)
+        live = self._make_install(tmp_path / "native", "bbb.Default (release)", 9_000.0)
+        # Order deliberately lists the stale one first to prove ordering alone
+        # does not decide the winner.
+        monkeypatch.setattr(
+            "zensync.profile._zen_root_candidates",
+            lambda: [tmp_path / "flatpak", tmp_path / "native"],
+        )
+        picked, name = _auto_discover()
+        assert picked == live
+        assert picked != stale
+
+    def test_last_used_prefers_active_lock(self, tmp_path):
+        prof = tmp_path / "p"
+        prof.mkdir()
+        sess = prof / "zen-sessions.jsonlz4"
+        sess.write_bytes(b"x")
+        os.utime(sess, (1_000.0, 1_000.0))
+        # A fresh lock symlink should dominate the (older) session mtime.
+        lock = prof / "lock"
+        lock.symlink_to("1.2.3.4:+99")
+        assert _profile_last_used(prof) >= 1_000.0

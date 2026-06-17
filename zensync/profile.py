@@ -147,11 +147,54 @@ def _zen_root_candidates() -> list[Path]:
     if sys.platform == "darwin":
         return [Path.home() / "Library" / "Application Support" / "zen"]
 
-    # Linux / Raspberry Pi OS: check native install first, then Flatpak
+    # Linux / Raspberry Pi OS. Multiple install kinds put the profile in
+    # different roots; we probe all of them and let _auto_discover pick the
+    # one that's actually in use (see _profile_last_used):
+    #   ~/.zen                                   native (tarball / AUR build)
+    #   ~/.config/zen                            native (some distro packages)
+    #   ~/.var/app/app.zen_browser.zen/.zen      Flatpak
     return [
         Path.home() / ".zen",
+        Path.home() / ".config" / "zen",
         Path.home() / ".var" / "app" / "app.zen_browser.zen" / ".zen",
     ]
+
+
+# Files whose mtime indicates a profile was recently used by the browser.
+# Includes the legacy singular session name for older Zen builds.
+_ACTIVITY_FILES: tuple[str, ...] = (
+    "zen-sessions.jsonlz4",
+    "sessionstore.jsonlz4",
+    "zen-session.jsonlz4",
+)
+
+
+def _profile_last_used(profile_dir: Path) -> float:
+    """
+    Return a "last used" timestamp for a profile (max mtime over its lock and
+    session files). Used to choose between multiple discovered profiles so we
+    never sync into a stale install (e.g. an abandoned Flatpak profile sitting
+    beside the native one the user actually runs).
+    """
+    times: list[float] = []
+    for lock in ("lock", "parent.lock", ".parentlock"):
+        lp = profile_dir / lock
+        try:
+            # lstat: the lock is a symlink whose own mtime tracks the session.
+            times.append(lp.lstat().st_mtime)
+        except OSError:
+            pass
+    for name in _ACTIVITY_FILES:
+        try:
+            times.append((profile_dir / name).stat().st_mtime)
+        except OSError:
+            pass
+    if times:
+        return max(times)
+    try:
+        return profile_dir.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +274,7 @@ def _auto_discover() -> tuple[Path, str]:
     Raises ProfileNotFoundError if no profile is found.
     """
     errors: list[str] = []
+    found: list[Path] = []
 
     for zen_root in _zen_root_candidates():
         ini_path = zen_root / "profiles.ini"
@@ -249,7 +293,15 @@ def _auto_discover() -> tuple[Path, str]:
             errors.append(f"{ini_path}: could not determine default profile")
             continue
 
-        return profile_dir, profile_dir.name
+        if profile_dir not in found:
+            found.append(profile_dir)
+
+    if found:
+        # Several Zen installs may coexist (a leftover Flatpak profile beside a
+        # native one). Pick the most recently used so we sync the profile the
+        # browser actually runs, not a stale one.
+        best = max(found, key=_profile_last_used)
+        return best, best.name
 
     raise ProfileNotFoundError(
         "Could not locate a Zen Browser profile.\n"
