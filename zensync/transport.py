@@ -276,10 +276,21 @@ def upload_snapshot(
             ],
         )
 
+    # Blob moved before manifest — a reader seeing the manifest can always find
+    # the blob.  The move is idempotent: if a concurrent push (e.g. the agent
+    # racing a manual `zensync push`) already moved an identically-named
+    # snapshot into place, treat it as success rather than failing on the now-
+    # missing staged file.  A snapshot_id encodes the content hash, so an
+    # identical name means identical bytes — overwriting/skipping is safe.
     for fname in (tarball.name, manifest_path.name):
         _run_strict([
             cfg.ssh_path, *_SSH_OPTS, hub,
-            f"mv {remote_tmp}/{fname} {remote_snap}/{fname}",
+            (
+                f"if [ -e {remote_tmp}/{fname} ]; then "
+                f"mv -f {remote_tmp}/{fname} {remote_snap}/{fname}; "
+                f"elif [ -e {remote_snap}/{fname} ]; then exit 0; "
+                f"else echo 'zensync: staged file {fname} missing' >&2; exit 1; fi"
+            ),
         ])
 
 

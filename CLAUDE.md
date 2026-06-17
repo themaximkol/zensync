@@ -269,7 +269,7 @@ Because writing to an active Zen profile corrupts it, and merging two live sessi
    ```
    ssh pi 'mv /var/lib/zensync/tmp/<id>/<file> /var/lib/zensync/snapshots/<device_id>/<file>'
    ```
-   Same for the manifest. The blob is moved before the manifest so a reader that sees a manifest can always also find the blob.
+   Same for the manifest. The blob is moved before the manifest so a reader that sees a manifest can always also find the blob. The move is **idempotent**: if a concurrent push (e.g. the long-running agent racing a manual `zensync push`) has already moved an identically-named snapshot into `snapshots/`, the move treats the now-missing staged file as success rather than erroring. A `snapshot_id` embeds the content hash, so an identical name means identical bytes.
 5. **Update `latest.json`** (hard pushes only) under flock via the `zensync-update-pointer` helper on the Pi (see §11). The helper does compare-and-swap against the existing pointer and refuses to clobber a pointer with a newer `updated_at` than the one the client expected. If CAS fails, the client retries (it may need to reconcile with whichever device just wrote).
 6. **Update local state**: write `last_pushed_snapshot_id`, `last_local_hash`.
 

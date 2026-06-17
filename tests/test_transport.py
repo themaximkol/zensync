@@ -226,15 +226,17 @@ class TestUploadSnapshot:
 
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ssh" and "mv" in " ".join(cmd):
-                mv_order.append(cmd[-1].split()[-1])  # destination path
+                # The move command names exactly one snapshot file; classify by
+                # which extension appears in the (idempotent) shell command.
+                mv_order.append(".tar.zst" if ".tar.zst" in cmd[-1] else ".json")
             return ok()
 
         with patch("subprocess.run", side_effect=fake_run):
             upload_snapshot(cfg, tarball, manifest_p, DEVICE_ID)
 
         # .tar.zst must appear before .json in mv order
-        assert mv_order[0].endswith(".tar.zst")
-        assert mv_order[1].endswith(".json")
+        assert mv_order[0] == ".tar.zst"
+        assert mv_order[1] == ".json"
 
     def test_raises_on_rsync_failure(self, cfg, tmp_path):
         tarball = tmp_path / f"{SNAPSHOT_ID}.tar.zst"
